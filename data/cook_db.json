@@ -1,0 +1,91 @@
+{
+  "stories": [
+    {
+      "id": "story-sarah-1",
+      "userId": "sarah-ahmed",
+      "userName": "Sarah Ahmed",
+      "userUsername": "sarah.design",
+      "userAvatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
+      "userVerified": true,
+      "mediaUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1200&auto=format&fit=crop&q=80",
+      "mediaType": "image",
+      "caption": "Iterating on the new COOK glassmorphism dashboard tokens! ✨ What do you think?",
+      "createdAt": 1792891846087,
+      "expiresAt": 1792978246087,
+      "viewers": [
+        "david-kim"
+      ],
+      "comments": [
+        {
+          "id": "sc-2",
+          "author": {
+            "id": "david-kim",
+            "name": "David Kim",
+            "username": "davidkim",
+            "avatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+            "verified": true
+          },
+          "content": "Matches the brand perfectly! Let it cook 🚀",
+          "createdAt": "1h ago"
+        }
+      ]
+    },
+    {
+      "id": "story-david-1",
+      "userId": "david-kim",
+      "userName": "David Kim",
+      "userUsername": "davidkim",
+      "userAvatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+      "userVerified": true,
+      "mediaUrl": "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=1200&auto=format&fit=crop&q=80",
+      "mediaType": "image",
+      "caption": "Late night coding session: shaving 120ms off our LLM inference pipeline 🔥",
+      "createdAt": 1792881046087,
+      "expiresAt": 1792967446087,
+      "viewers": [],
+      "comments": []
+    }
+  ],
+  "users": {},
+  "sessions": {},
+  "userCredentials": {},
+  "communities": [
+    {
+      "id": "comm-1",
+      "name": "AI & Foundation Models",
+      "tagline": "Engineers & researchers training, fine-tuning, and deploying sovereign AI.",
+      "category": "Technology",
+      "icon": "Bot",
+      "memberCount": "3.4k members",
+      "joined": false,
+      "moderators": [
+        "Elena Rostova",
+        "Dr. Marcus Vance"
+      ],
+      "rules": [
+        "Share model architecture benchmarks",
+        "No spam",
+        "Disclose dataset origins"
+      ],
+      "pinnedPost": "Monthly research sync: Exploring test-time compute scaling."
+    },
+    {
+      "id": "comm-2",
+      "name": "Pre-Seed Founders Club",
+      "tagline": "Zero to One operators sharing term sheets, hiring hacks, and investor memos.",
+      "category": "Startups",
+      "icon": "Code",
+      "memberCount": "5.1k members",
+      "joined": false,
+      "moderators": [
+        "Sarah Ahmed",
+        "David Kim"
+      ],
+      "rules": [
+        "Constructive pitch feedback",
+        "Strict confidentiality on fundraising decks"
+      ],
+      "pinnedPost": "Seed round benchmark report Q3/Q4 is out now."
+    }
+  ]
+}
