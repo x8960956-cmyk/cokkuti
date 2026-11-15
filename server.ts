@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import dotenv from 'dotenv';
+import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -13,13 +14,23 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const isServerless = Boolean(
+  process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME
+);
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Ensure persistent uploads directory exists and is served statically (with range support for video seeking)
-const uploadsDir = path.resolve(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+const uploadsDir = isServerless
+  ? path.join(os.tmpdir(), 'cook_uploads')
+  : path.resolve(__dirname, 'uploads');
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (uploadDirErr) {
+  console.warn('Uploads directory notice:', uploadDirErr);
 }
 app.use('/uploads', express.static(uploadsDir, { acceptRanges: true }));
 
@@ -383,6 +394,15 @@ app.get('/sitemap.xml', (req, res) => {
 // ==========================================
 // AUTHENTICATION REST ENDPOINTS
 // ==========================================
+
+app.get('/api/auth/health', (req, res) => {
+  res.json({
+    ok: true,
+    runtime: isServerless ? 'vercel-serverless' : 'node-server',
+    host: req.get('host'),
+    protocol: req.protocol,
+  });
+});
 
 // 1. Google OAuth Sign-In & Registration
 app.post('/api/auth/google', (req, res) => {
@@ -2058,4 +2078,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!isServerless) {
+  startServer();
+}
+
+export { app, startServer };
+export default app;

@@ -12,6 +12,9 @@ import {
   KeyRound,
   ExternalLink,
   Info,
+  Copy,
+  Check,
+  RefreshCw,
 } from 'lucide-react';
 import { LegalTermsModal } from './LegalTermsModal';
 import {
@@ -20,9 +23,12 @@ import {
   GoogleAuthProvider,
   setInMemorySheetsToken,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   firebaseAppConfig,
+  FirebaseUser,
 } from '../firebase';
 
 interface GoogleAuthScreenProps {
@@ -50,12 +56,153 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
   const [termsModalOpen, setTermsModalOpen] = useState(false);
   const [termsTab, setTermsTab] = useState<'terms' | 'privacy'>('terms');
   const [showConfigHelper, setShowConfigHelper] = useState(false);
+  const [showRedirectFallback, setShowRedirectFallback] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
-  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || firebaseAppConfig.oAuthClientId || '';
+  const explicitGoogleClientId = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined)?.trim() || '';
+  const googleClientId = explicitGoogleClientId || firebaseAppConfig.oAuthClientId || '';
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isVercelHost = currentHostname.endsWith('.vercel.app');
+  const shouldRenderGsiButton = Boolean(explicitGoogleClientId || (googleClientId && !isVercelHost));
 
-  // Initialize official Google Identity Services button if Client ID exists
+  const copyValue = (key: string, value: string) => {
+    if (!value || !navigator?.clipboard) return;
+    navigator.clipboard.writeText(value);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
+  };
+
+  const safeParseJson = async (res: Response) => {
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(
+        res.status === 404
+          ? 'Backend auth API (/api/auth/google) returned 404. Ensure Vercel API routes (/api/index.ts & vercel.json) are deployed.'
+          : `Server returned an unexpected response (HTTP ${res.status}).`
+      );
+    }
+  };
+
+  const formatOAuthError = (err: any): { message: string; offerRedirect: boolean; openConfig: boolean } => {
+    const code = err?.code || '';
+    if (code === 'auth/unauthorized-domain') {
+      return {
+        message: `Domain "${currentHostname}" is not authorized in Firebase Auth. Add "${currentHostname}" to Firebase Console → Authentication → Settings → Authorized domains (or use Email Login below).`,
+        offerRedirect: false,
+        openConfig: true,
+      };
+    }
+    if (code === 'auth/popup-blocked') {
+      return {
+        message: 'Google sign-in popup was blocked by your browser. Click "Continue via Redirect" below or allow popups.',
+        offerRedirect: true,
+        openConfig: false,
+      };
+    }
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      return {
+        message: 'Sign-in popup was closed before completing. You can retry or use Redirect Sign-In below.',
+        offerRedirect: true,
+        openConfig: false,
+      };
+    }
+    if (code === 'auth/operation-not-allowed') {
+      return {
+        message: 'Google sign-in provider is not enabled in Firebase Console → Authentication → Sign-in method.',
+        offerRedirect: false,
+        openConfig: true,
+      };
+    }
+    if (code === 'auth/network-request-failed') {
+      return {
+        message: 'Network error reaching Google/Firebase Auth. Check your connection or try Redirect Sign-In.',
+        offerRedirect: true,
+        openConfig: false,
+      };
+    }
+    return {
+      message: err?.message || 'Google Sign-In failed.',
+      offerRedirect: Boolean(code.startsWith('auth/')),
+      openConfig: false,
+    };
+  };
+
+  const syncFirebaseUserWithBackend = async (firebaseUser: FirebaseUser, accessToken?: string) => {
+    if (accessToken) {
+      setInMemorySheetsToken(accessToken);
+    }
+
+    if (!firebaseUser?.email) {
+      throw new Error('Google account email could not be verified. Please try again.');
+    }
+
+    const targetEmail = firebaseUser.email;
+    const targetName = firebaseUser.displayName || targetEmail.split('@')[0];
+    const targetAvatar =
+      firebaseUser.photoURL ||
+      'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80';
+    const targetId = firebaseUser.uid;
+
+    const res = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        googleUser: {
+          id: targetId,
+          email: targetEmail,
+          name: targetName,
+          avatar: targetAvatar,
+          firstName: targetName.split(' ')[0],
+          lastName: targetName.split(' ').slice(1).join(' '),
+        },
+      }),
+    });
+
+    const data = await safeParseJson(res);
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Google authentication failed.');
+    }
+
+    localStorage.setItem('cook_auth_token', data.token);
+    onAuthSuccess({
+      user: data.user,
+      token: data.token,
+      onboardingCompleted: data.onboardingCompleted,
+      onboardingStep: data.onboardingStep,
+    });
+  };
+
+  // Complete Firebase Redirect OAuth result if returning from signInWithRedirect
   useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (!active || !result?.user) return;
+        setLoading(true);
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        await syncFirebaseUserWithBackend(result.user, credential?.accessToken);
+      } catch (err: any) {
+        if (!active) return;
+        const formatted = formatOAuthError(err);
+        setError(formatted.message);
+        if (formatted.openConfig) setShowConfigHelper(true);
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Initialize official Google Identity Services button when explicitly configured or on authorized non-Vercel host
+  useEffect(() => {
+    if (!shouldRenderGsiButton || authMode !== 'google') return;
     let checkInterval: NodeJS.Timeout | null = null;
 
     const setupGsi = () => {
@@ -99,7 +246,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
     return () => {
       if (checkInterval) clearInterval(checkInterval);
     };
-  }, [googleClientId, authMode]);
+  }, [googleClientId, authMode, shouldRenderGsiButton]);
 
   // Handle Google Token Credential from Google Identity Services
   const handleGoogleCredential = async (credential: string) => {
@@ -111,7 +258,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential }),
       });
-      const data = await res.json();
+      const data = await safeParseJson(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Google authentication failed.');
       }
@@ -130,65 +277,35 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
     }
   };
 
-  // Google Sign-In with Firebase Auth Popup
+  // Google Sign-In with Firebase Auth Popup (plus seamless redirect fallback)
   const handleFirebaseGoogleLogin = async () => {
     setLoading(true);
     setError(null);
+    setShowRedirectFallback(false);
 
     try {
       const userCredential = await signInWithPopup(auth, googleProvider);
-      const firebaseUser = userCredential.user;
       const credential = GoogleAuthProvider.credentialFromResult(userCredential);
-      if (credential?.accessToken) {
-        setInMemorySheetsToken(credential.accessToken);
-      }
-
-      if (!firebaseUser?.email) {
-        throw new Error('Google account email could not be verified. Please try again.');
-      }
-
-      const targetEmail = firebaseUser.email;
-      const targetName = firebaseUser.displayName || targetEmail.split('@')[0];
-      const targetAvatar =
-        firebaseUser.photoURL ||
-        'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80';
-      const targetId = firebaseUser.uid;
-
-      // Synchronize with COOK backend session and persistent storage
-      const res = await fetch('/api/auth/google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          googleUser: {
-            id: targetId,
-            email: targetEmail,
-            name: targetName,
-            avatar: targetAvatar,
-            firstName: targetName.split(' ')[0],
-            lastName: targetName.split(' ').slice(1).join(' '),
-          },
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Google authentication failed.');
-      }
-
-      localStorage.setItem('cook_auth_token', data.token);
-      onAuthSuccess({
-        user: data.user,
-        token: data.token,
-        onboardingCompleted: data.onboardingCompleted,
-        onboardingStep: data.onboardingStep,
-      });
+      await syncFirebaseUserWithBackend(userCredential.user, credential?.accessToken);
     } catch (err: any) {
-      setError(
-        err?.code === 'auth/popup-blocked'
-          ? 'Google sign-in popup was blocked by your browser. Please allow popups or use Email Login.'
-          : err?.message || 'Google Sign-In failed.'
-      );
+      const formatted = formatOAuthError(err);
+      setError(formatted.message);
+      setShowRedirectFallback(formatted.offerRedirect);
+      if (formatted.openConfig) setShowConfigHelper(true);
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFirebaseGoogleRedirect = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await signInWithRedirect(auth, googleProvider);
+    } catch (err: any) {
+      const formatted = formatOAuthError(err);
+      setError(formatted.message);
+      if (formatted.openConfig) setShowConfigHelper(true);
       setLoading(false);
     }
   };
@@ -220,7 +337,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const data = await safeParseJson(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Authentication failed.');
       }
@@ -346,8 +463,8 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
           {/* TAB 1: GOOGLE SIGN-IN */}
           {authMode === 'google' && (
             <div className="space-y-4 pt-1">
-              {/* Official Google Identity Services Container if client ID is set */}
-              {googleClientId && (
+              {/* Official Google Identity Services Container if configured and host-authorized */}
+              {shouldRenderGsiButton && (
                 <div className="flex justify-center">
                   <div ref={googleBtnContainerRef} className="w-full max-w-[320px] flex justify-center" />
                 </div>
@@ -358,7 +475,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
                 type="button"
                 disabled={loading}
                 onClick={() => handleFirebaseGoogleLogin()}
-                className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-gray-100 text-gray-900 font-bold text-sm flex items-center justify-center gap-3 shadow-lg shadow-white/10 active:scale-[0.98] transition cursor-pointer"
+                className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-gray-100 text-gray-900 font-bold text-sm flex items-center justify-center gap-3 shadow-lg shadow-white/10 active:scale-[0.98] transition cursor-pointer disabled:opacity-60"
               >
                 <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24">
                   <path
@@ -380,6 +497,18 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
                 </svg>
                 <span>{loading ? 'Authenticating...' : 'Continue with Google'}</span>
               </button>
+
+              {showRedirectFallback && (
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={handleFirebaseGoogleRedirect}
+                  className="w-full py-2.5 px-4 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-200 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Continue via Redirect Sign-In (Popup-Free)</span>
+                </button>
+              )}
 
               {/* Honest Google OAuth Configuration Notice */}
               <div className="p-3.5 rounded-2xl bg-[#0B0F19] border border-gray-800 space-y-2 text-xs">
@@ -403,15 +532,48 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
                 </p>
 
                 {showConfigHelper && (
-                  <div className="pt-2 border-t border-gray-800 space-y-1.5 text-[11px] text-gray-400">
+                  <div className="pt-2 border-t border-gray-800 space-y-2 text-[11px] text-gray-400">
                     <p>
-                      <strong>Firebase Project:</strong> <code className="text-emerald-300">{firebaseAppConfig.projectId}</code>
+                      <strong>Firebase Project:</strong>{' '}
+                      <code className="text-emerald-300">{firebaseAppConfig.projectId}</code>
                     </p>
-                    <p>
-                      <strong>OAuth Client ID:</strong> <code className="text-indigo-300 text-[10px] break-all">{googleClientId}</code>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate">
+                        <strong>Firebase Authorized Domain:</strong>{' '}
+                        <code className="text-amber-300">{currentHostname}</code>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => copyValue('domain', currentHostname)}
+                        className="shrink-0 px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center gap-1 text-[10px]"
+                      >
+                        {copiedKey === 'domain' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>Copy</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate">
+                        <strong>Authorized JS Origin:</strong>{' '}
+                        <code className="text-gray-200">{currentOrigin}</code>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => copyValue('origin', currentOrigin)}
+                        className="shrink-0 px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 flex items-center gap-1 text-[10px]"
+                      >
+                        {copiedKey === 'origin' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>Copy</span>
+                      </button>
+                    </div>
+                    <p className="break-all">
+                      <strong>Redirect URI:</strong>{' '}
+                      <code className="text-indigo-300 text-[10px]">
+                        https://{firebaseAppConfig.authDomain}/__/auth/handler
+                      </code>
                     </p>
-                    <p>
-                      <strong>Authorized Origin:</strong> <code className="text-gray-300">{typeof window !== 'undefined' ? window.location.origin : ''}</code>
+                    <p className="break-all">
+                      <strong>OAuth Client ID:</strong>{' '}
+                      <code className="text-indigo-300 text-[10px]">{googleClientId}</code>
                     </p>
                   </div>
                 )}

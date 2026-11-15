@@ -136,6 +136,7 @@ export default function App() {
     let isDisposed = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let retryAttempt = 0;
+    let hasConnectedOnce = false;
 
     const connectWs = () => {
       if (isDisposed) return;
@@ -148,6 +149,7 @@ export default function App() {
       wsRef.current = socket;
 
       socket.onopen = () => {
+        hasConnectedOnce = true;
         retryAttempt = 0;
         setWsConnected(true);
         fetchMessages();
@@ -228,7 +230,7 @@ export default function App() {
 
       socket.onclose = () => {
         setWsConnected(false);
-        if (!isDisposed) {
+        if (!isDisposed && (hasConnectedOnce || retryAttempt < 2)) {
           const delay = Math.min(8000, 1000 * Math.pow(1.6, retryAttempt++));
           reconnectTimer = setTimeout(connectWs, delay);
         }

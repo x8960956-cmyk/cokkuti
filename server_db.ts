@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
@@ -6,9 +7,17 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.resolve(__dirname, 'data');
+const isServerless = Boolean(
+  process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME
+);
+
+const DATA_DIR = isServerless
+  ? path.join(os.tmpdir(), 'cook_data')
+  : path.resolve(__dirname, 'data');
 const DB_FILE = path.resolve(DATA_DIR, 'cook_db.json');
-const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
+const UPLOADS_DIR = isServerless
+  ? path.join(os.tmpdir(), 'cook_uploads')
+  : path.resolve(__dirname, 'uploads');
 
 export const MODERATOR_EMAIL = 'x8960956@gmail.com';
 
@@ -16,12 +25,16 @@ export function isModeratorUser(user: any): boolean {
   return Boolean(user?.email && user.email.toLowerCase().trim() === MODERATOR_EMAIL);
 }
 
-// Ensure directories exist
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Ensure directories exist safely (serverless /tmp or writable local disk)
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+} catch (dirErr) {
+  console.warn('Storage directory initialization notice:', dirErr);
 }
 
 export interface StoryComment {
@@ -107,6 +120,17 @@ export interface CookDatabase {
 }
 
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  process.env.GEMINI_API_KEY ||
+  'cook_platform_session_hmac_secret_gen-lang-client-0257294565';
+
+function signSessionPayload(payloadB64: string): string {
+  return crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+}
 
 function hashPassword(password: string, salt: string): string {
   return crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
@@ -308,14 +332,32 @@ class DatabaseManager {
     this.persistSync(this.data);
   }
 
-  // Session & Authentication Management
+  // Session & Authentication Management (supports both stateful disk sessions & stateless HMAC tokens for Vercel serverless)
   public createSession(userId: string): string {
-    const token = `cook_sess_${crypto.randomBytes(32).toString('hex')}`;
     const now = Date.now();
+    const expiresAt = now + SESSION_DURATION_MS;
+    const user = this.data.users[userId];
+    const tokenPayload = {
+      uid: userId,
+      email: user?.email || '',
+      name: user?.name || '',
+      username: user?.username || '',
+      avatar: user?.avatar || '',
+      authProvider: user?.authProvider || 'google',
+      onboardingCompleted: Boolean(user?.onboardingCompleted),
+      onboardingStep: user?.onboardingStep || 1,
+      iat: now,
+      exp: expiresAt,
+      jti: crypto.randomBytes(8).toString('hex'),
+    };
+    const payloadB64 = Buffer.from(JSON.stringify(tokenPayload), 'utf8').toString('base64url');
+    const sig = signSessionPayload(payloadB64);
+    const token = `cook_v1.${payloadB64}.${sig}`;
+
     this.data.sessions[token] = {
       userId,
       createdAt: now,
-      expiresAt: now + SESSION_DURATION_MS,
+      expiresAt,
     };
     this.save();
     return token;
@@ -324,13 +366,61 @@ class DatabaseManager {
   public getSession(token: string): UserSession | null {
     if (!token) return null;
     const session = this.data.sessions[token];
-    if (!session) return null;
-    if (Date.now() > session.expiresAt) {
-      delete this.data.sessions[token];
-      this.save();
-      return null;
+    if (session) {
+      if (Date.now() > session.expiresAt) {
+        delete this.data.sessions[token];
+        this.save();
+        return null;
+      }
+      return session;
     }
-    return session;
+
+    // Stateless signed token verification fallback (essential across Vercel serverless instances)
+    if (token.startsWith('cook_v1.')) {
+      try {
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+        const [, payloadB64, sig] = parts;
+        const expectedSig = signSessionPayload(payloadB64);
+        if (sig.length !== expectedSig.length) return null;
+        if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
+          return null;
+        }
+        const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+        if (!parsed?.uid || !parsed?.exp || Date.now() > Number(parsed.exp)) {
+          return null;
+        }
+
+        // Hydrate session and minimal user record on this serverless container if absent
+        const hydratedSession: UserSession = {
+          userId: parsed.uid,
+          createdAt: Number(parsed.iat) || Date.now(),
+          expiresAt: Number(parsed.exp),
+        };
+        this.data.sessions[token] = hydratedSession;
+        if (!this.data.users[parsed.uid]) {
+          this.data.users[parsed.uid] = {
+            id: parsed.uid,
+            email: parsed.email || '',
+            name: parsed.name || 'COOK Builder',
+            username: parsed.username || `builder_${parsed.uid.slice(-5)}`,
+            avatar: parsed.avatar || '',
+            authProvider: parsed.authProvider || 'google',
+            role: 'Founder',
+            primaryRole: 'Founder',
+            onboardingCompleted: Boolean(parsed.onboardingCompleted),
+            onboardingStep: parsed.onboardingStep || 1,
+            createdAt: hydratedSession.createdAt,
+            updatedAt: Date.now(),
+          };
+        }
+        return hydratedSession;
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
   }
 
   public deleteSession(token: string): boolean {

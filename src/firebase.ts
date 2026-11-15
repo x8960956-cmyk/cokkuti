@@ -3,6 +3,8 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -13,8 +15,16 @@ import {
 import { getFirestore, doc, setDoc, getDoc, collection } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
+const resolvedFirebaseConfig = {
+  ...firebaseConfig,
+  authDomain:
+    (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined)?.trim() ||
+    firebaseConfig.authDomain,
+};
+
 // Initialize Firebase App
-export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+export const app =
+  getApps().length === 0 ? initializeApp(resolvedFirebaseConfig) : getApps()[0];
 
 // Initialize Auth
 export const auth = getAuth(app);
@@ -73,6 +83,8 @@ export async function connectGoogleSheetsAccess(): Promise<string> {
 export {
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithCredential,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -84,4 +96,4 @@ export {
   collection,
 };
 export type { FirebaseUser };
-export const firebaseAppConfig = firebaseConfig;
+export const firebaseAppConfig = resolvedFirebaseConfig;
