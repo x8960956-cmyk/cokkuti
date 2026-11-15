@@ -17,11 +17,11 @@
   "rewrites": [
     {
       "source": "/__/auth/:path*",
-      "destination": "https://gen-lang-client-0257294565.firebaseapp.com/__/auth/:path*"
+      "destination": "https://cook-962b5.firebaseapp.com/__/auth/:path*"
     },
     {
       "source": "/__/firebase/:path*",
-      "destination": "https://gen-lang-client-0257294565.firebaseapp.com/__/firebase/:path*"
+      "destination": "https://cook-962b5.firebaseapp.com/__/firebase/:path*"
     },
     {
       "source": "/api/(.*)",

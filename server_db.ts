@@ -123,7 +123,7 @@ const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
   process.env.GEMINI_API_KEY ||
-  'cook_platform_session_hmac_secret_gen-lang-client-0257294565';
+  'cook_platform_session_hmac_secret_cook-962b5';
 
 function signSessionPayload(payloadB64: string): string {
   return crypto

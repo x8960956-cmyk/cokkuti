@@ -57,6 +57,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
   const [termsTab, setTermsTab] = useState<'terms' | 'privacy'>('terms');
   const [showConfigHelper, setShowConfigHelper] = useState(false);
   const [showRedirectFallback, setShowRedirectFallback] = useState(false);
+  const [isUnauthorizedDomainError, setIsUnauthorizedDomainError] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
@@ -87,20 +88,28 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
     }
   };
 
-  const formatOAuthError = (err: any): { message: string; offerRedirect: boolean; openConfig: boolean } => {
-    const code = err?.code || '';
-    if (code === 'auth/unauthorized-domain') {
+  const formatOAuthError = (
+    err: any
+  ): { message: string; offerRedirect: boolean; openConfig: boolean; unauthorizedDomain: boolean } => {
+    const code = String(err?.code || '');
+    const rawMsg = String(err?.message || '');
+    if (
+      code === 'auth/unauthorized-domain' ||
+      rawMsg.includes('auth/unauthorized-domain')
+    ) {
       return {
-        message: `Domain "${currentHostname}" is not authorized in Firebase Auth. Add "${currentHostname}" to Firebase Console → Authentication → Settings → Authorized domains (or use Email Login below).`,
+        message: `Domain "${currentHostname}" is not in Firebase Authorized Domains yet. Add it in Firebase Console → Authentication → Settings → Authorized domains.`,
         offerRedirect: false,
         openConfig: true,
+        unauthorizedDomain: true,
       };
     }
-    if (code === 'auth/popup-blocked') {
+    if (code === 'auth/popup-blocked' || rawMsg.includes('auth/popup-blocked')) {
       return {
         message: 'Google sign-in popup was blocked by your browser. Click "Continue via Redirect" below or allow popups.',
         offerRedirect: true,
         openConfig: false,
+        unauthorizedDomain: false,
       };
     }
     if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
@@ -108,6 +117,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
         message: 'Sign-in popup was closed before completing. You can retry or use Redirect Sign-In below.',
         offerRedirect: true,
         openConfig: false,
+        unauthorizedDomain: false,
       };
     }
     if (code === 'auth/operation-not-allowed') {
@@ -115,6 +125,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
         message: 'Google sign-in provider is not enabled in Firebase Console → Authentication → Sign-in method.',
         offerRedirect: false,
         openConfig: true,
+        unauthorizedDomain: false,
       };
     }
     if (code === 'auth/network-request-failed') {
@@ -122,12 +133,14 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
         message: 'Network error reaching Google/Firebase Auth. Check your connection or try Redirect Sign-In.',
         offerRedirect: true,
         openConfig: false,
+        unauthorizedDomain: false,
       };
     }
     return {
-      message: err?.message || 'Google Sign-In failed.',
+      message: rawMsg || 'Google Sign-In failed.',
       offerRedirect: Boolean(code.startsWith('auth/')),
       openConfig: false,
+      unauthorizedDomain: false,
     };
   };
 
@@ -190,6 +203,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
         if (!active) return;
         const formatted = formatOAuthError(err);
         setError(formatted.message);
+        setIsUnauthorizedDomainError(formatted.unauthorizedDomain);
         if (formatted.openConfig) setShowConfigHelper(true);
       } finally {
         if (active) setLoading(false);
@@ -282,6 +296,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
     setLoading(true);
     setError(null);
     setShowRedirectFallback(false);
+    setIsUnauthorizedDomainError(false);
 
     try {
       const userCredential = await signInWithPopup(auth, googleProvider);
@@ -291,6 +306,7 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
       const formatted = formatOAuthError(err);
       setError(formatted.message);
       setShowRedirectFallback(formatted.offerRedirect);
+      setIsUnauthorizedDomainError(formatted.unauthorizedDomain);
       if (formatted.openConfig) setShowConfigHelper(true);
     } finally {
       setLoading(false);
@@ -300,11 +316,13 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
   const handleFirebaseGoogleRedirect = async () => {
     setLoading(true);
     setError(null);
+    setIsUnauthorizedDomainError(false);
     try {
       await signInWithRedirect(auth, googleProvider);
     } catch (err: any) {
       const formatted = formatOAuthError(err);
       setError(formatted.message);
+      setIsUnauthorizedDomainError(formatted.unauthorizedDomain);
       if (formatted.openConfig) setShowConfigHelper(true);
       setLoading(false);
     }
@@ -422,9 +440,53 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
 
           {/* Error Alert */}
           {error && (
-            <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-2.5 text-xs text-rose-300">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-400" />
-              <div className="flex-1">{error}</div>
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-2.5 text-xs text-rose-200">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-400" />
+                <div className="flex-1 leading-relaxed">{error}</div>
+              </div>
+
+              {isUnauthorizedDomainError && currentHostname && (
+                <div className="pt-2 border-t border-rose-500/20 space-y-2 text-[11px]">
+                  <div className="flex items-center justify-between gap-2 bg-[#0B0F19]/80 px-2.5 py-1.5 rounded-lg border border-rose-500/20">
+                    <code className="text-amber-300 truncate">{currentHostname}</code>
+                    <button
+                      type="button"
+                      onClick={() => copyValue('err-domain', currentHostname)}
+                      className="shrink-0 px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-white flex items-center gap-1 text-[10px]"
+                    >
+                      {copiedKey === 'err-domain' ? (
+                        <Check className="w-3 h-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
+                      <span>Copy Domain</span>
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <a
+                      href={`https://console.firebase.google.com/project/${firebaseAppConfig.projectId}/authentication/settings`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30 font-semibold transition"
+                    >
+                      <span>Open Firebase Authorized Domains</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('email-signin');
+                        setError(null);
+                        setIsUnauthorizedDomainError(false);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-200 border border-indigo-500/30 font-semibold transition"
+                    >
+                      Use Email Login Instead
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -573,7 +635,9 @@ export const GoogleAuthScreen: React.FC<GoogleAuthScreenProps> = ({ onAuthSucces
                     </p>
                     <p className="break-all">
                       <strong>OAuth Client ID:</strong>{' '}
-                      <code className="text-indigo-300 text-[10px]">{googleClientId}</code>
+                      <code className="text-indigo-300 text-[10px]">
+                        {googleClientId || `Managed by Firebase Auth (${firebaseAppConfig.projectId})`}
+                      </code>
                     </p>
                   </div>
                 )}

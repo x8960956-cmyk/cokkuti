@@ -17,9 +17,18 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const resolvedFirebaseConfig = {
   ...firebaseConfig,
+  apiKey:
+    (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined)?.trim() ||
+    firebaseConfig.apiKey,
   authDomain:
     (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined)?.trim() ||
     firebaseConfig.authDomain,
+  projectId:
+    (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined)?.trim() ||
+    firebaseConfig.projectId,
+  appId:
+    (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined)?.trim() ||
+    firebaseConfig.appId,
 };
 
 // Initialize Firebase App
@@ -70,14 +79,27 @@ onAuthStateChanged(auth, (fbUser) => {
 
 // Acquire a fresh Google Sheets OAuth access token via popup for the moderator
 export async function connectGoogleSheetsAccess(): Promise<string> {
-  const result = await signInWithPopup(auth, sheetsProvider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  const accessToken = credential?.accessToken;
-  if (!accessToken) {
-    throw new Error('Google Sheets permission was not granted.');
+  try {
+    const result = await signInWithPopup(auth, sheetsProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = credential?.accessToken;
+    if (!accessToken) {
+      throw new Error('Google Sheets permission was not granted.');
+    }
+    inMemorySheetsAccessToken = accessToken;
+    return accessToken;
+  } catch (err: any) {
+    if (
+      err?.code === 'auth/unauthorized-domain' ||
+      String(err?.message || '').includes('auth/unauthorized-domain')
+    ) {
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+      throw new Error(
+        `Domain "${host}" is not authorized in Firebase Console → Authentication → Settings → Authorized domains.`
+      );
+    }
+    throw err;
   }
-  inMemorySheetsAccessToken = accessToken;
-  return accessToken;
 }
 
 export {
