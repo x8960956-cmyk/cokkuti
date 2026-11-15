@@ -90,59 +90,59 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   ];
 
   return (
-    <aside className="hidden lg:flex w-60 xl:w-64 flex-shrink-0 flex-col gap-4 select-none sticky top-20 self-start max-h-[calc(100dvh-5.5rem)] overflow-y-auto no-scrollbar pb-6">
+    <aside className="hidden lg:block w-60 xl:w-64 flex-shrink-0 space-y-3.5 select-none sticky top-20 self-start max-h-[calc(100dvh-5.5rem)] overflow-y-auto pr-1 pb-6">
       {/* Profile Snapshot Card */}
-      <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-5 shadow-lg relative overflow-hidden group">
+      <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-4 shadow-lg relative overflow-hidden group">
         <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#FF5E1E] via-[#6366F1] to-[#3B82F6]" />
         
-        <div className="flex items-center gap-3.5 mb-3.5">
-          <div className="relative cursor-pointer" onClick={() => setActiveTab('profile')}>
+        <div className="flex items-center gap-3 mb-3 pt-1">
+          <div className="relative cursor-pointer shrink-0" onClick={() => setActiveTab('profile')}>
             <img
               src={user.avatar}
               alt={user.name}
-              className="w-14 h-14 rounded-full object-cover border-2 border-indigo-500/50"
+              className="w-12 h-12 rounded-full object-cover border-2 border-indigo-500/50"
             />
-            <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-[#13192B]" />
+            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-[#13192B]" />
           </div>
           <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setActiveTab('profile')}>
             <div className="flex items-center gap-1.5">
-              <h3 className="font-bold text-white text-base truncate">{user.name}</h3>
-              <ShieldCheck className="w-4 h-4 text-blue-400 flex-shrink-0" />
+              <h3 className="font-bold text-white text-sm truncate">{user.name}</h3>
+              <ShieldCheck className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
             </div>
-            <p className="text-xs text-gray-400 truncate mt-0.5">{user.headline || user.title}</p>
+            <p className="text-[11px] text-gray-400 truncate mt-0.5">{user.headline || user.title}</p>
           </div>
         </div>
 
-        <p className="text-xs text-gray-300 leading-relaxed mb-4 italic line-clamp-2">
+        <p className="text-[11px] text-gray-300 leading-relaxed mb-3 italic line-clamp-2">
           "{user.bio}"
         </p>
 
         {/* Stats Row with Real Verified Connection Count */}
-        <div className="grid grid-cols-3 gap-2 py-3 border-y border-[#1F293D] mb-4 text-center">
+        <div className="grid grid-cols-3 gap-2 py-2.5 border-y border-[#1F293D] mb-3 text-center">
           <div>
             <span className="block font-extrabold text-sm text-white">{user.postsCount || 0}</span>
-            <span className="text-[11px] text-gray-400">Posts</span>
+            <span className="text-[10px] text-gray-400">Posts</span>
           </div>
           <div>
             <span className="block font-extrabold text-sm text-white">{user.connectionsCount || 0}</span>
-            <span className="text-[11px] text-gray-400">Connections</span>
+            <span className="text-[10px] text-gray-400">Connections</span>
           </div>
           <div>
             <span className="block font-extrabold text-sm text-white">{user.followersCount || 0}</span>
-            <span className="text-[11px] text-gray-400">Followers</span>
+            <span className="text-[10px] text-gray-400">Followers</span>
           </div>
         </div>
 
         <div className="flex gap-2">
           <button
             onClick={() => setActiveTab('profile')}
-            className="flex-1 py-2 px-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-semibold transition text-center cursor-pointer"
+            className="flex-1 py-1.5 px-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-semibold transition text-center cursor-pointer"
           >
             View Profile
           </button>
           <button
             onClick={onOpenProfile}
-            className="flex-1 py-2 px-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition text-center cursor-pointer"
+            className="flex-1 py-1.5 px-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition text-center cursor-pointer"
           >
             Edit Profile
           </button>

@@ -96,7 +96,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   const featuredStartup = fundings.length > 0 ? fundings[0] : null;
 
   return (
-    <aside className="w-72 2xl:w-80 flex-shrink-0 flex-col gap-4 select-none sticky top-20 self-start max-h-[calc(100dvh-5.5rem)] overflow-y-auto no-scrollbar pb-6 hidden xl:flex">
+    <aside className="w-72 2xl:w-80 flex-shrink-0 space-y-4 select-none sticky top-20 self-start max-h-[calc(100dvh-5.5rem)] overflow-y-auto pr-1 pb-6 hidden xl:block">
       {/* Real Trending Topics */}
       <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-4 shadow-lg">
         <div className="flex items-center justify-between mb-3.5">

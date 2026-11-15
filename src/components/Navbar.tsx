@@ -189,7 +189,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Global Search Bar (Tablet & Laptop) */}
         <form
           onSubmit={handleSearchSubmit}
-          className="relative flex-1 max-w-[210px] lg:max-w-[260px] xl:max-w-[270px] 2xl:max-w-sm hidden md:block"
+          className="relative flex-1 max-w-[210px] lg:max-w-[185px] xl:max-w-[260px] 2xl:max-w-sm hidden md:block"
         >
           <div className="relative flex items-center">
             <Search className="absolute left-3.5 w-4 h-4 text-gray-400 pointer-events-none" />
@@ -209,8 +209,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </form>
 
-        {/* Desktop Navigation Links (xl+ screens) */}
-        <nav className="hidden xl:flex items-center gap-1">
+        {/* Desktop Navigation Links (lg+ screens) */}
+        <nav className="hidden lg:flex items-center gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -442,7 +442,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Drawer Sheet */}
             <div className="relative w-80 max-w-[85vw] h-[100dvh] bg-[#13192B] border-r border-[#1F293D] flex flex-col shadow-2xl z-10 p-5 pb-[max(20px,env(safe-area-inset-bottom,20px))] overflow-y-auto animate-in slide-in-from-left duration-200">
             {/* Drawer Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-[#1F293D]">
+            <div className="shrink-0 flex items-center justify-between pb-4 border-b border-[#1F293D]">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-[#1E2742] border border-orange-500/40 p-1 flex items-center justify-center">
                   <Flame className="w-4 h-4 text-[#FF5E1E] fill-[#FF5E1E]" />
@@ -461,7 +461,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* User Snapshot in Drawer */}
-            <div className="my-4 p-3 rounded-2xl bg-[#0B0F19] border border-gray-800 flex items-center gap-3">
+            <div className="shrink-0 my-4 p-3 rounded-2xl bg-[#0B0F19] border border-gray-800 flex items-center gap-3">
               <img
                 src={user.avatar}
                 alt={user.name}
@@ -487,7 +487,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Full Drawer Navigation Links */}
-            <div className="space-y-1 flex-1">
+            <div className="shrink-0 space-y-1 flex-1">
               {drawerLinks.map((link) => {
                 const Icon = link.icon;
                 const isActive = activeTab === link.id;
@@ -528,7 +528,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Drawer Footer Actions */}
-            <div className="pt-4 mt-auto border-t border-[#1F293D] space-y-2">
+            <div className="shrink-0 pt-4 mt-4 border-t border-[#1F293D] space-y-2">
               <button
                 onClick={() => {
                   setMobileDrawerOpen(false);
