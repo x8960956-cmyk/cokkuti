@@ -110,9 +110,9 @@ export const AiMentor: React.FC<AiMentorProps> = ({ onShare }) => {
   };
 
   return (
-    <div className="flex-1 max-w-4xl space-y-6 pb-16">
+    <div className="w-full flex-1 min-w-0 max-w-5xl space-y-6 pb-8">
       {/* Header Banner */}
-      <div className="bg-gradient-to-r from-[#1E1B4B] via-[#13192B] to-[#1E1B4B] border border-indigo-500/40 rounded-3xl p-6 sm:p-8 relative overflow-hidden shadow-2xl">
+      <div className="bg-gradient-to-r from-[#1E1B4B] via-[#13192B] to-[#1E1B4B] border border-indigo-500/40 rounded-2xl sm:rounded-3xl p-5 sm:p-8 relative overflow-hidden shadow-2xl">
         <div className="relative z-10 max-w-2xl space-y-2">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#FF5E1E]/20 text-[#FF5E1E] text-xs font-bold border border-[#FF5E1E]/30">
             <Flame className="w-3.5 h-3.5 fill-[#FF5E1E]" />

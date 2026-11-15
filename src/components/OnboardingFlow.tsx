@@ -255,10 +255,12 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
       id: `edu-${Date.now()}`,
       institution: eduSchool.trim(),
       institutionLogo: eduLogo || undefined,
+      qualificationType: 'Degree',
       degree: eduDegree.trim(),
       fieldOfStudy: eduField.trim(),
       startDate: eduStartDate || '2019',
       endDate: eduEndDate || '2023',
+      currentlyStudying: false,
       description: eduDesc.trim(),
       photos: eduPhotos,
       visibility: 'public',
@@ -281,6 +283,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
       id: `proj-${Date.now()}`,
       title: projTitle.trim(),
       description: projDesc.trim(),
+      role: primaryRole || 'Creator',
       link: projLink.trim(),
       imageUrl: projCover || undefined,
       photos: projPhotos,
@@ -544,7 +547,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Maya Lin"
+                  placeholder="Your full name"
                   className="w-full px-3.5 py-2.5 bg-[#0B0F19] border border-gray-800 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -558,7 +561,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
                     required
                     value={username}
                     onChange={(e) => setUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    placeholder="maya_builds"
+                    placeholder="your_username"
                     className="w-full pl-8 pr-3.5 py-2.5 bg-[#0B0F19] border border-gray-800 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
                   />
                 </div>
@@ -575,7 +578,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
                 required
                 value={headline}
                 onChange={(e) => setHeadline(e.target.value)}
-                placeholder="e.g. Founder & CEO @ TechNova • AI Systems Architect & Product Builder"
+                placeholder="e.g. Founder & CEO • Software Architect & Product Builder"
                 className="w-full px-3.5 py-2.5 bg-[#0B0F19] border border-gray-800 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
@@ -1214,9 +1217,24 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
             {/* Social Links Preview */}
             {socialLinkItems.length > 0 && (
               <ConnectWithMe
-                links={socialLinkItems}
-                isOwner={true}
-                displayName={name || 'Founder'}
+                user={{
+                  id: user.id,
+                  name: name || 'Founder',
+                  username: username || 'user',
+                  avatar: avatar || '',
+                  role: primaryRole || 'Founder',
+                  title: headline || '',
+                  bio: bio || '',
+                  location: location || '',
+                  verified: false,
+                  postsCount: 0,
+                  followersCount: 0,
+                  followingCount: 0,
+                  skills: skills,
+                  interests: interests,
+                  socialLinkItems: socialLinkItems,
+                }}
+                socialLinks={socialLinkItems}
               />
             )}
 

@@ -26,49 +26,59 @@ import {
   Lock,
   Calendar,
   CheckCircle2,
+  Eye,
+  Heart,
+  TrendingUp,
+  Video,
+  Upload,
 } from 'lucide-react';
-import { User, ExperienceItem, EducationItem, Post, FundingRequest, Clip, RecordPhoto } from '../types';
+import { User, ExperienceItem, EducationItem, Post, FundingRequest, RecordPhoto } from '../types';
 import { ShareItem } from './ShareModal';
 import { PostCard } from './PostCard';
 import { PhotoCropModal } from './PhotoCropModal';
 import { ConnectWithMe } from './ConnectWithMe';
+import { VideoPlayer } from './VideoPlayer';
 
 interface ProfileViewProps {
   user: User;
   posts: Post[];
   fundings: FundingRequest[];
-  clips: Clip[];
   isOwner?: boolean;
   onEditProfile: () => void;
   onShare: (item: ShareItem) => void;
   onOpenRaiseFundsModal?: () => void;
+  onOpenUploadVideo?: () => void;
   onContactUser?: () => void;
   onUpdateUser?: (updated: Partial<User>) => void;
   onLikePost?: (postId: string) => void;
   onSavePost?: (postId: string) => void;
   onRepostPost?: (postId: string) => void;
+  onDeletePost?: (postId: string) => void;
   onAddComment?: (postId: string, text: string) => void;
+  onVideoView?: (postId: string, completed?: boolean) => void;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
   user,
   posts,
   fundings,
-  clips,
   isOwner = true,
   onEditProfile,
   onShare,
   onOpenRaiseFundsModal,
+  onOpenUploadVideo,
   onContactUser,
   onUpdateUser,
   onLikePost,
   onSavePost,
   onRepostPost,
+  onDeletePost,
   onAddComment,
+  onVideoView,
 }) => {
   const [showFullBio, setShowFullBio] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
-  const [activeTab, setActiveTab] = useState<'all' | 'experience' | 'education' | 'projects' | 'posts' | 'startups'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'videos' | 'experience' | 'education' | 'projects' | 'posts' | 'startups'>('all');
   const [isConnected, setIsConnected] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
 
@@ -76,6 +86,62 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [photoCropOpen, setPhotoCropOpen] = useState(false);
   const [cropTarget, setCropTarget] = useState<'avatar' | 'cover'>('avatar');
   const [activeImagePreview, setActiveImagePreview] = useState<{ url: string; caption?: string; title?: string } | null>(null);
+  const [suggestedUsers, setSuggestedUsers] = useState<any[]>([]);
+  const [connectedIds, setConnectedIds] = useState<string[]>([]);
+  const [localConnectionsCount, setLocalConnectionsCount] = useState<number>(user.connectionsCount || 0);
+
+  React.useEffect(() => {
+    setLocalConnectionsCount(user.connectionsCount || 0);
+  }, [user.connectionsCount]);
+
+  React.useEffect(() => {
+    const loadNetwork = async () => {
+      try {
+        const token = localStorage.getItem('cook_auth_token');
+        const [uRes, cRes] = await Promise.all([
+          fetch('/api/users'),
+          fetch('/api/connections', { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
+        ]);
+        const uData = await uRes.json();
+        const cData = await cRes.json();
+        if (Array.isArray(uData.users)) {
+          setSuggestedUsers(uData.users.filter((u: any) => u.id !== user.id));
+        }
+        if (Array.isArray(cData.connectedUserIds)) {
+          setConnectedIds(cData.connectedUserIds);
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    loadNetwork();
+  }, [user.id]);
+
+  const handleToggleConnect = async (targetUserId: string) => {
+    const token = localStorage.getItem('cook_auth_token');
+    if (!token) return;
+    try {
+      const res = await fetch('/api/connections/toggle', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ targetUserId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setConnectedIds((prev) =>
+          data.connected ? [...prev, targetUserId] : prev.filter((id) => id !== targetUserId)
+        );
+        if (typeof data.connectionsCount === 'number') {
+          setLocalConnectionsCount(data.connectionsCount);
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  };
 
   // Filter posts created by this user
   const userPosts = posts.filter(
@@ -87,18 +153,36 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   // Filter funding requests for this founder
   const userFundings = fundings.filter(
-    (f) =>
-      f.founderName.toLowerCase() === user.name.toLowerCase() ||
-      f.startupName.toLowerCase() === 'technova' ||
-      user.name.toLowerCase().includes('arjun')
+    (f) => f.founderName.toLowerCase() === user.name.toLowerCase()
   );
 
-  // Filter clips for this creator
-  const userClips = clips.filter(
-    (c) =>
-      c.creator.name.toLowerCase() === user.name.toLowerCase() ||
-      c.creator.username.toLowerCase() === user.username.toLowerCase()
+  // Filter video posts for this creator
+  const userVideoPosts = userPosts.filter(
+    (p) => p.type === 'video' || Boolean(p.media?.some((m) => m.type === 'video'))
   );
+
+  const totalVideoViews = userVideoPosts.reduce((sum, p) => sum + (p.viewsCount || 0), 0);
+
+  const totalVideoLikes = userVideoPosts.reduce((sum, p) => sum + (p.likes || 0), 0);
+
+  const totalWatchCompletions = userVideoPosts.reduce(
+    (sum, p) => sum + (p.watchCompletions || 0),
+    0
+  );
+
+  const totalVideoInteractions = userVideoPosts.reduce(
+    (sum, p) =>
+      sum +
+      (p.likes || 0) +
+      (p.comments?.length || 0) +
+      (p.reposts || 0) +
+      (p.saves || 0) +
+      (p.shareCount || 0),
+    0
+  );
+
+  const avgVideoEngagementRate =
+    totalVideoViews > 0 ? ((totalVideoInteractions / totalVideoViews) * 100).toFixed(1) : '0.0';
 
   const handleCopyProfileLink = () => {
     const origin = typeof window !== 'undefined' ? window.location.origin : 'https://cook.app';
@@ -122,7 +206,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const completionScore = user.profileCompletionPercentage || 96;
 
   return (
-    <div className="w-full max-w-6xl mx-auto space-y-5 pb-20 select-none">
+    <div className="w-full min-w-0 max-w-6xl mx-auto space-y-5 pb-8 select-none">
       {/* Photo Crop Modal */}
       <PhotoCropModal
         isOpen={photoCropOpen}
@@ -331,9 +415,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               )}
               <div className="flex items-center gap-1.5 text-gray-300 font-semibold">
                 <Users className="w-3.5 h-3.5 text-indigo-400" />
-                <span>{user.connectionsCount || 1840} connections</span>
+                <span>{localConnectionsCount} connections</span>
                 <span className="text-gray-600">•</span>
-                <span>{user.followersCount.toLocaleString()} followers</span>
+                <span>{(user.followersCount || 0).toLocaleString()} followers</span>
               </div>
             </div>
           </div>
@@ -364,6 +448,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </button>
             </div>
           )}
+          {/* Profile Section Navigation Tabs */}
+          <div className="mt-5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+            {[
+              { id: 'all', label: 'Overview' },
+              { id: 'videos', label: `Videos (${userVideoPosts.length})` },
+              { id: 'posts', label: `Posts (${userPosts.length})` },
+              { id: 'experience', label: `Experience (${(user.experience || []).length})` },
+              { id: 'education', label: `Education (${(user.education || []).length})` },
+              { id: 'projects', label: `Projects (${(user.projects || []).length})` },
+              { id: 'startups', label: `Startups (${userFundings.length})` },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setActiveTab(t.id as any)}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition cursor-pointer ${
+                  activeTab === t.id
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20'
+                    : 'bg-[#0B0F19] text-gray-400 hover:text-white border border-gray-800'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -371,6 +479,130 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Main Column */}
         <div className="lg:col-span-8 space-y-5">
+          {/* SECTION: Uploaded Videos & Real Engagement Metrics */}
+          {(activeTab === 'all' || activeTab === 'videos') && (userVideoPosts.length > 0 || isOwner) && (
+            <div className="bg-[#13192B] border border-[#1F293D] rounded-3xl p-6 sm:p-7 shadow-lg space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Video className="w-5 h-5 text-[#FF5E1E]" />
+                  <div>
+                    <h2 className="text-base sm:text-lg font-bold text-white">Videos & Engagement</h2>
+                    <p className="text-[11px] text-gray-400">
+                      Real playback analytics across your shared COOK videos
+                    </p>
+                  </div>
+                </div>
+                {isOwner && onOpenUploadVideo && (
+                  <button
+                    onClick={onOpenUploadVideo}
+                    className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#FF5E1E] to-[#FF7A00] hover:from-[#ff6d31] hover:to-[#ff8d1e] text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-orange-500/20 transition cursor-pointer self-start sm:self-auto"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload Video</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Real Video Metrics Summary */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 rounded-2xl bg-[#0B0F19] border border-gray-800">
+                  <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <Film className="w-3.5 h-3.5 text-[#FF5E1E]" />
+                    <span>Videos Shared</span>
+                  </div>
+                  <div className="text-base font-extrabold text-white mt-0.5">
+                    {userVideoPosts.length}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl bg-[#0B0F19] border border-gray-800">
+                  <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <Eye className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Total Views</span>
+                  </div>
+                  <div className="text-base font-extrabold text-white mt-0.5">
+                    {totalVideoViews.toLocaleString()}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl bg-[#0B0F19] border border-gray-800">
+                  <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <Heart className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Video Likes</span>
+                  </div>
+                  <div className="text-base font-extrabold text-white mt-0.5">
+                    {totalVideoLikes.toLocaleString()}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl bg-[#0B0F19] border border-gray-800">
+                  <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Engagement Rate</span>
+                  </div>
+                  <div className="text-base font-extrabold text-emerald-400 mt-0.5">
+                    {avgVideoEngagementRate}%
+                  </div>
+                  <span className="text-[10px] text-gray-500">
+                    {totalWatchCompletions} full watches
+                  </span>
+                </div>
+              </div>
+
+              {userVideoPosts.length > 0 ? (
+                <div className="space-y-4">
+                  {userVideoPosts.map((vp) => {
+                    const videoMedia = vp.media?.find((m) => m.type === 'video');
+                    const vViews = vp.viewsCount || 0;
+                    const vInteractions =
+                      (vp.likes || 0) +
+                      (vp.comments?.length || 0) +
+                      (vp.reposts || 0) +
+                      (vp.saves || 0) +
+                      (vp.shareCount || 0);
+                    const vRate = vViews > 0 ? ((vInteractions / vViews) * 100).toFixed(1) : '0.0';
+                    return (
+                      <div
+                        key={vp.id}
+                        className="p-4 rounded-2xl bg-[#0B0F19] border border-gray-800 space-y-3"
+                      >
+                        {videoMedia && (
+                          <VideoPlayer
+                            src={videoMedia.url}
+                            caption={vp.title}
+                            viewsCount={vViews}
+                            initialDurationSeconds={vp.videoDurationSeconds}
+                            onFirstPlay={() => onVideoView && onVideoView(vp.id, false)}
+                            onWatchComplete={() => onVideoView && onVideoView(vp.id, true)}
+                          />
+                        )}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-white text-sm truncate">
+                              {vp.title || 'Uploaded Video'}
+                            </h3>
+                            <p className="text-xs text-gray-400 line-clamp-2 mt-0.5">
+                              {vp.content}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-3 text-[11px] text-gray-300 flex-shrink-0">
+                            <span>{vViews} views</span>
+                            <span>•</span>
+                            <span>{vp.watchCompletions || 0} completed</span>
+                            <span>•</span>
+                            <span className="text-emerald-400 font-semibold">{vRate}% eng.</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-6 rounded-2xl bg-[#0B0F19] border border-dashed border-gray-800 text-center space-y-2">
+                  <p className="text-xs text-gray-400">
+                    No videos uploaded yet. Share product demos, founder updates, or pitch videos directly on your profile and the main feed.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           {/* SECTION 2: About Section */}
           <div className="bg-[#13192B] border border-[#1F293D] rounded-3xl p-6 sm:p-7 shadow-lg space-y-3 relative">
             <div className="flex items-center justify-between">
@@ -419,6 +651,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
 
           {/* SECTION 3: Experience Section */}
+          {(activeTab === 'all' || activeTab === 'experience') && (
           <div className="bg-[#13192B] border border-[#1F293D] rounded-3xl p-6 sm:p-7 shadow-lg space-y-5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -523,8 +756,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               ))}
             </div>
           </div>
+          )}
 
           {/* SECTION 4: Education & Learning */}
+          {(activeTab === 'all' || activeTab === 'education') && (
           <div className="bg-[#13192B] border border-[#1F293D] rounded-3xl p-6 sm:p-7 shadow-lg space-y-5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -612,9 +847,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               ))}
             </div>
           </div>
+          )}
 
           {/* SECTION 5: Projects & Portfolio */}
-          {user.projects && user.projects.length > 0 && (
+          {(activeTab === 'all' || activeTab === 'projects') && user.projects && user.projects.length > 0 && (
             <div className="bg-[#13192B] border border-[#1F293D] rounded-3xl p-6 sm:p-7 shadow-lg space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -681,7 +917,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           )}
 
           {/* SECTION 6: Startups & Funding Rounds (COOK native integration) */}
-          {userFundings.length > 0 && (
+          {(activeTab === 'all' || activeTab === 'startups') && userFundings.length > 0 && (
             <div className="bg-[#13192B] border border-orange-500/30 rounded-3xl p-6 sm:p-7 shadow-lg space-y-4 relative overflow-hidden">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -804,30 +1040,35 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           />
 
           {/* SECTION 9: User Posts & Activity */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base sm:text-lg font-bold text-white">Public Activity & Posts</h2>
-              <span className="text-xs text-gray-400">{userPosts.length} posts</span>
-            </div>
-
-            {userPosts.length > 0 ? (
-              userPosts.map((post) => (
-                <PostCard
-                  key={post.id}
-                  post={post}
-                  onLike={() => onLikePost && onLikePost(post.id)}
-                  onSave={() => onSavePost && onSavePost(post.id)}
-                  onRepost={() => onRepostPost && onRepostPost(post.id)}
-                  onShare={(item) => onShare(item)}
-                  onAddComment={(text) => onAddComment && onAddComment(post.id, text)}
-                />
-              ))
-            ) : (
-              <div className="p-8 rounded-2xl bg-[#13192B] border border-[#1F293D] text-center text-xs text-gray-400">
-                No posts shared yet. Start cooking an idea!
+          {(activeTab === 'all' || activeTab === 'posts') && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base sm:text-lg font-bold text-white">Public Activity & Posts</h2>
+                <span className="text-xs text-gray-400">{userPosts.length} posts</span>
               </div>
-            )}
-          </div>
+
+              {userPosts.length > 0 ? (
+                userPosts.map((post) => (
+                  <PostCard
+                    key={post.id}
+                    post={post}
+                    currentUserId={user.id}
+                    onLike={() => onLikePost && onLikePost(post.id)}
+                    onSave={() => onSavePost && onSavePost(post.id)}
+                    onRepost={() => onRepostPost && onRepostPost(post.id)}
+                    onDelete={onDeletePost}
+                    onShare={(item) => onShare(item)}
+                    onAddComment={(text) => onAddComment && onAddComment(post.id, text)}
+                    onVideoView={onVideoView}
+                  />
+                ))
+              ) : (
+                <div className="p-8 rounded-2xl bg-[#13192B] border border-[#1F293D] text-center text-xs text-gray-400">
+                  No posts shared yet. Start cooking an idea!
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right Sidebar: Profile Completion, Recommendations, Certs */}
@@ -906,44 +1147,47 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </div>
           )}
 
-          {/* Suggested Founders & Co-Founders */}
+          {/* Real Network Members on COOK */}
           <div className="bg-[#13192B] border border-[#1F293D] rounded-3xl p-5 shadow-lg space-y-3.5">
-            <h3 className="font-bold text-white text-sm">Suggested Connections</h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <img
-                    src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&auto=format&fit=crop&q=80"
-                    alt="Sarah Ahmed"
-                    className="w-9 h-9 rounded-full object-cover border border-indigo-500"
-                  />
-                  <div>
-                    <span className="font-bold text-white text-xs block">Sarah Ahmed</span>
-                    <span className="text-[10px] text-gray-400">Product Designer @ Lumina</span>
-                  </div>
-                </div>
-                <button className="px-2.5 py-1 rounded-lg bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white text-[11px] font-bold transition">
-                  Connect
-                </button>
+            <h3 className="font-bold text-white text-sm">People on COOK</h3>
+            {suggestedUsers.length === 0 ? (
+              <p className="text-xs text-gray-400 leading-relaxed">
+                No other builders have joined yet. Once real users register on COOK, they will appear here so you can connect directly.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {suggestedUsers.slice(0, 6).map((person) => {
+                  const isConnected = connectedIds.includes(person.id);
+                  return (
+                    <div key={person.id} className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img
+                          src={person.avatar}
+                          alt={person.name}
+                          className="w-9 h-9 rounded-full object-cover border border-indigo-500 flex-shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <span className="font-bold text-white text-xs block truncate">{person.name}</span>
+                          <span className="text-[10px] text-gray-400 block truncate">
+                            {person.headline || person.role || `@${person.username}`}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleConnect(person.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition flex-shrink-0 ${
+                          isConnected
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white'
+                        }`}
+                      >
+                        {isConnected ? 'Connected' : 'Connect'}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <img
-                    src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=100&auto=format&fit=crop&q=80"
-                    alt="Elena Rostova"
-                    className="w-9 h-9 rounded-full object-cover border border-indigo-500"
-                  />
-                  <div>
-                    <span className="font-bold text-white text-xs block">Elena Rostova</span>
-                    <span className="text-[10px] text-gray-400">Partner @ Horizon VC</span>
-                  </div>
-                </div>
-                <button className="px-2.5 py-1 rounded-lg bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white text-[11px] font-bold transition">
-                  Connect
-                </button>
-              </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

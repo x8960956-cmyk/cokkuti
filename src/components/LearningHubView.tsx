@@ -26,9 +26,9 @@ export const LearningHubView: React.FC<LearningHubViewProps> = ({ onShare }) => 
   });
 
   return (
-    <div className="flex-1 max-w-5xl space-y-6 pb-16">
+    <div className="w-full flex-1 min-w-0 max-w-6xl space-y-6 pb-8">
       {/* Header */}
-      <div className="rounded-3xl bg-gradient-to-r from-[#13192B] via-[#1E1B4B] to-[#13192B] border border-indigo-500/30 p-6 sm:p-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-xl">
+      <div className="rounded-2xl sm:rounded-3xl bg-gradient-to-r from-[#13192B] via-[#1E1B4B] to-[#13192B] border border-indigo-500/30 p-5 sm:p-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-xl">
         <div>
           <div className="flex items-center gap-2 mb-2">
             <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300">

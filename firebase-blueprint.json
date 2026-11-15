@@ -1,0 +1,51 @@
+{
+  "project_id": "kingly-guru-63bk6",
+  "database_id": "ai-studio-cook-03edafb9-67e5-4714-9011-8ce1d07bb2ac",
+  "collections": [
+    {
+      "name": "users",
+      "purpose": "Stores user account information and detailed multi-step profile data (headline, bio, roles, experience with photos, education with photos, projects with photos, social links with ordering).",
+      "fields": {
+        "id": "string - Firebase Auth UID or COOK user ID",
+        "name": "string - Full name",
+        "username": "string - Unique COOK handle",
+        "email": "string - Authenticated user email",
+        "authProvider": "string - google or email",
+        "avatar": "string - Profile photo URL (uploaded from PC or Google account)",
+        "coverImage": "string - Cover image URL",
+        "role": "string - Primary user role",
+        "headline": "string - Professional headline",
+        "bio": "string - About/bio summary",
+        "location": "string - User location",
+        "website": "string - External portfolio link",
+        "interests": "array of strings",
+        "languages": "array of strings",
+        "skills": "array of strings",
+        "availability": "string - Full-time, Part-time, Open, etc.",
+        "collaborationGoals": "array of strings",
+        "socialLinkItems": "array of objects with platform, url, order, visibility",
+        "experience": "array of experience items with companyLogo and photos gallery",
+        "education": "array of education items with institutionLogo and photos gallery",
+        "projects": "array of project items with imageUrl and gallery",
+        "onboardingCompleted": "boolean - true when profile creation steps are finished",
+        "onboardingStep": "number - 1 or 2 for resumption"
+      },
+      "access": "Public read; write restricted to authenticated owner (request.auth.uid == userId)"
+    },
+    {
+      "name": "posts",
+      "purpose": "Home feed posts, startup pitches, and community ideas",
+      "fields": {
+        "id": "string",
+        "author": "object with id, name, username, avatar, role",
+        "content": "string",
+        "type": "string - post, pitch, idea, video",
+        "createdAt": "timestamp",
+        "likesCount": "number",
+        "commentsCount": "number"
+      },
+      "access": "Public read; create/update/delete restricted to post author"
+    }
+  ],
+  "security_rules_summary": "Users can only write to their own profile document. Posts can only be created, modified, or deleted by their verified author. Public read is enabled for feed exploration."
+}

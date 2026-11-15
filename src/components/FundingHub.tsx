@@ -22,7 +22,6 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { FundingRequest } from '../types';
-import { investorsData } from '../data/mockData';
 import { ShareItem } from './ShareModal';
 
 interface FundingHubProps {
@@ -48,6 +47,28 @@ export const FundingHub: React.FC<FundingHubProps> = ({
   const [searchQuery, setSearchQuery] = useState(selectedStartupFilter || '');
   const [activeVideoModal, setActiveVideoModal] = useState<string | null>(null);
   const [interestedIds, setInterestedIds] = useState<Record<string, boolean>>({});
+  const [realInvestors, setRealInvestors] = useState<any[]>([]);
+
+  React.useEffect(() => {
+    const loadInvestors = async () => {
+      try {
+        const res = await fetch('/api/users');
+        const data = await res.json();
+        if (Array.isArray(data.users)) {
+          setRealInvestors(
+            data.users.filter((u: any) =>
+              String(u.role || u.primaryRole || '')
+                .toLowerCase()
+                .includes('investor')
+            )
+          );
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    loadInvestors();
+  }, []);
 
   const industries = ['All', 'Education & AI', 'EdTech / HRTech', 'CleanTech & Hardware', 'HealthTech & AI', 'FinTech', 'SaaS'];
   const stages = ['All', 'Idea', 'Prototype', 'MVP', 'Early Traction', 'Revenue Generating', 'Growth'];
@@ -77,9 +98,9 @@ export const FundingHub: React.FC<FundingHubProps> = ({
   };
 
   return (
-    <div className="flex-1 max-w-5xl space-y-6 pb-16">
+    <div className="w-full flex-1 min-w-0 max-w-6xl space-y-6 pb-8">
       {/* Hero Header */}
-      <div className="relative rounded-3xl bg-gradient-to-r from-[#1E1B4B] via-[#13192B] to-[#1E1B4B] border border-indigo-500/30 p-6 sm:p-8 overflow-hidden shadow-2xl">
+      <div className="relative rounded-2xl sm:rounded-3xl bg-gradient-to-r from-[#1E1B4B] via-[#13192B] to-[#1E1B4B] border border-indigo-500/30 p-5 sm:p-8 overflow-hidden shadow-2xl">
         <div className="relative z-10 max-w-2xl space-y-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#FF5E1E]/20 text-[#FF5E1E] text-xs font-bold border border-[#FF5E1E]/30">
             <Flame className="w-3.5 h-3.5 fill-[#FF5E1E]" />
@@ -159,11 +180,11 @@ export const FundingHub: React.FC<FundingHubProps> = ({
             />
           </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto no-scrollbar">
+          <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
             <select
               value={selectedIndustry}
               onChange={e => setSelectedIndustry(e.target.value)}
-              className="px-3 py-1.5 rounded-xl bg-[#0B0F19] border border-gray-800 text-xs text-gray-300 focus:outline-none focus:border-indigo-500"
+              className="w-full sm:w-auto px-3 py-2 rounded-xl bg-[#0B0F19] border border-gray-800 text-xs text-gray-300 focus:outline-none focus:border-indigo-500"
             >
               {industries.map(ind => (
                 <option key={ind} value={ind} className="bg-[#13192B] text-white">
@@ -175,7 +196,7 @@ export const FundingHub: React.FC<FundingHubProps> = ({
             <select
               value={selectedStage}
               onChange={e => setSelectedStage(e.target.value)}
-              className="px-3 py-1.5 rounded-xl bg-[#0B0F19] border border-gray-800 text-xs text-gray-300 focus:outline-none focus:border-indigo-500"
+              className="w-full sm:w-auto px-3 py-2 rounded-xl bg-[#0B0F19] border border-gray-800 text-xs text-gray-300 focus:outline-none focus:border-indigo-500"
             >
               {stages.map(st => (
                 <option key={st} value={st} className="bg-[#13192B] text-white">
@@ -187,77 +208,75 @@ export const FundingHub: React.FC<FundingHubProps> = ({
         </div>
       )}
 
-      {/* Investors Directory View */}
+      {/* Real Investors Directory View */}
       {activeTab === 'investors' && (
         <div className="space-y-4">
           <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-4">
-            <h3 className="font-bold text-white text-sm mb-1">Accredited Angels & VC Partners on COOK</h3>
+            <h3 className="font-bold text-white text-sm mb-1">Registered Investors on COOK</h3>
             <p className="text-xs text-gray-400">
-              Direct connection pipeline. Submit your pitch deck directly to matching partners without gatekeepers.
+              Verified angel backers and VC partners with active accounts on COOK.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {investorsData.map(inv => (
-              <div
-                key={inv.id}
-                className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-5 space-y-3.5 hover:border-gray-700 transition"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <img
-                      src={inv.avatar}
-                      alt={inv.name}
-                      className="w-12 h-12 rounded-full object-cover border border-indigo-500/40"
-                    />
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <h4 className="font-bold text-white text-sm">{inv.name}</h4>
-                        {inv.verified && <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />}
+          {realInvestors.length === 0 ? (
+            <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-10 text-center space-y-2.5">
+              <Users className="w-8 h-8 text-indigo-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">No investors registered yet</h4>
+              <p className="text-xs text-gray-400 max-w-md mx-auto leading-relaxed">
+                Real angel investors and venture partners who sign up with an Investor role will appear here automatically.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {realInvestors.map(inv => (
+                <div
+                  key={inv.id}
+                  className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-5 space-y-3.5 hover:border-gray-700 transition"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={inv.avatar}
+                        alt={inv.name}
+                        className="w-12 h-12 rounded-full object-cover border border-indigo-500/40"
+                      />
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h4 className="font-bold text-white text-sm">{inv.name}</h4>
+                          {inv.verified && <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />}
+                        </div>
+                        <p className="text-xs text-gray-400">{inv.headline || inv.role}</p>
+                        {inv.location && <span className="text-[11px] text-gray-500">{inv.location}</span>}
                       </div>
-                      <p className="text-xs text-gray-400">{inv.title}</p>
-                      <span className="text-[11px] text-gray-500">{inv.location}</span>
                     </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FF5E1E]/15 text-[#FF5E1E] border border-[#FF5E1E]/30">
-                    {inv.checkSize}
-                  </span>
-                </div>
 
-                <p className="text-xs text-gray-300 leading-relaxed">{inv.bio}</p>
+                  {inv.bio && <p className="text-xs text-gray-300 leading-relaxed">{inv.bio}</p>}
 
-                <div className="space-y-1.5 text-xs">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-gray-500 text-[11px]">Focus:</span>
-                    {inv.focus.map(f => (
-                      <span key={f} className="px-2 py-0.5 rounded bg-white/5 text-indigo-300 text-[10px]">
-                        {f}
-                      </span>
-                    ))}
+                  {Array.isArray(inv.interests) && inv.interests.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                      <span className="text-gray-500 text-[11px]">Focus:</span>
+                      {inv.interests.map((f: string) => (
+                        <span key={f} className="px-2 py-0.5 rounded bg-white/5 text-indigo-300 text-[10px]">
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-gray-800 flex items-center justify-end">
+                    <button
+                      onClick={() => onContactFounder(inv.name)}
+                      className="py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Message Investor</span>
+                    </button>
                   </div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-gray-500 text-[11px]">Stages:</span>
-                    {inv.stages.map(s => (
-                      <span key={s} className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px]">
-                        {s}
-                      </span>
-                    ))}
-                  </div>
                 </div>
-
-                <div className="pt-2 border-t border-gray-800 flex items-center justify-between">
-                  <span className="text-[11px] text-gray-400">{inv.portfolioCount} Portfolio Companies</span>
-                  <button
-                    onClick={() => onContactFounder(inv.name)}
-                    className="py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Pitch Investor</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -265,10 +284,41 @@ export const FundingHub: React.FC<FundingHubProps> = ({
       {activeTab !== 'investors' && (
         <div className="space-y-5">
           {filteredFundings.length === 0 ? (
-            <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-8 text-center space-y-2">
-              <p className="text-sm font-semibold text-white">No funding requests match your criteria</p>
-              <p className="text-xs text-gray-400">Try adjusting your industry, stage filters, or search terms.</p>
-            </div>
+            fundings.length === 0 ? (
+              <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-10 text-center space-y-4 shadow-xl">
+                <div className="w-14 h-14 mx-auto rounded-2xl bg-[#FF5E1E]/15 border border-[#FF5E1E]/30 flex items-center justify-center text-[#FF5E1E]">
+                  <DollarSign className="w-7 h-7" />
+                </div>
+                <div className="space-y-1.5 max-w-md mx-auto">
+                  <h3 className="text-lg font-bold text-white">No active funding rounds yet</h3>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    COOK Venture Engine connects builders with early angels and seed backers. Be the first to publish your pitch, deck, and funding terms!
+                  </p>
+                </div>
+                <button
+                  onClick={onOpenRaiseFundsModal}
+                  className="py-2.5 px-5 rounded-xl bg-gradient-to-r from-[#FF5E1E] to-[#FF7A00] hover:from-[#ff6d31] hover:to-[#ff8d1e] text-white text-xs sm:text-sm font-bold shadow-lg shadow-orange-500/25 inline-flex items-center gap-2 transition cursor-pointer"
+                >
+                  <DollarSign className="w-4 h-4" />
+                  <span>Raise Funds for Your Startup</span>
+                </button>
+              </div>
+            ) : (
+              <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-8 text-center space-y-3">
+                <p className="text-sm font-semibold text-white">No funding requests match your criteria</p>
+                <p className="text-xs text-gray-400">Try adjusting your industry, stage filters, or search terms.</p>
+                <button
+                  onClick={() => {
+                    setSelectedIndustry('all');
+                    setSelectedStage('all');
+                    setSearchQuery('');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs text-gray-300 transition"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            )
           ) : (
             filteredFundings.map(fund => {
               const percent = Math.min(100, Math.round((fund.amountRaised / fund.fundingGoal) * 100));

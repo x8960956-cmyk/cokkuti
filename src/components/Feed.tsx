@@ -1,13 +1,6 @@
 import React, { useState, useRef } from 'react';
 import {
-  FileText,
-  Image as ImageIcon,
-  Video,
-  Mic,
-  Paperclip,
-  Link,
   BarChart2,
-  Calendar,
   DollarSign,
   Send,
   Sparkles,
@@ -16,14 +9,14 @@ import {
   Camera,
   Film,
   Trash2,
-  Plus,
-  Upload,
+  Loader2,
 } from 'lucide-react';
 import { Post, User } from '../types';
 import { currentUser as fallbackUser } from '../data/mockData';
 import { PostCard } from './PostCard';
 import { ShareItem } from './ShareModal';
 import { StoriesBar } from './StoriesBar';
+import { uploadMediaFile, extractVideoDuration, formatDuration } from '../utils/mediaUpload';
 
 interface FeedProps {
   currentUser?: User;
@@ -36,6 +29,7 @@ interface FeedProps {
   onShare: (item: ShareItem) => void;
   onDelete?: (postId: string) => void;
   onAddComment: (postId: string, text: string) => void;
+  onVideoView?: (postId: string, completed?: boolean) => void;
   onOpenCreateModal: (defaultType?: string) => void;
   onOpenRaiseFundsModal: () => void;
   onViewStartup: (startupName: string) => void;
@@ -55,6 +49,7 @@ export const Feed: React.FC<FeedProps> = ({
   onShare,
   onDelete,
   onAddComment,
+  onVideoView,
   onOpenCreateModal,
   onOpenRaiseFundsModal,
   onViewStartup,
@@ -63,83 +58,99 @@ export const Feed: React.FC<FeedProps> = ({
   onDirectPost,
 }) => {
   const user = currentUserProp || fallbackUser;
+  const [quickTitle, setQuickTitle] = useState('');
   const [quickText, setQuickText] = useState('');
-  const [mediaList, setMediaList] = useState<{ url: string; type: 'image' | 'video'; name: string }[]>([]);
+  const [mediaList, setMediaList] = useState<
+    { url: string; type: 'image' | 'video'; name: string; durationSeconds?: number }[]
+  >([]);
   const [isPosting, setIsPosting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
 
   const filterTabs = [
     'For You',
+    'Videos',
     'Following',
     'Trending',
     'New Ideas',
     'Startups',
     'Opportunities',
-    'Let Them Cook',
   ];
 
-  // Handle Photo files picked directly from computer
-  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Upload photos permanently to /uploads server storage
+  const handlePhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    setUploadError(null);
 
-    Array.from(files).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setMediaList(prev => [
-            ...prev,
-            {
-              type: 'image',
-              url: event.target!.result as string,
-              name: file.name,
-            },
-          ]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  // Handle Video file picked directly from computer
-  const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (event.target?.result) {
+    for (const file of Array.from(files)) {
+      try {
+        setUploadProgress(5);
+        const uploaded = await uploadMediaFile(file, (pct) => setUploadProgress(pct));
         setMediaList(prev => [
           ...prev,
-          {
-            type: 'video',
-            url: event.target!.result as string,
-            name: file.name,
-          },
+          { type: 'image', url: uploaded.url, name: file.name },
         ]);
+      } catch (err: any) {
+        setUploadError(err?.message || 'Failed to upload photo');
+      } finally {
+        setUploadProgress(null);
       }
-    };
-    reader.readAsDataURL(file);
+    }
+    e.target.value = '';
   };
 
-  const handleQuickPostSubmit = (e: React.FormEvent) => {
+  // Upload video permanently to /uploads server storage
+  const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError(null);
+
+    try {
+      setUploadProgress(5);
+      const [durationSeconds, uploaded] = await Promise.all([
+        extractVideoDuration(file),
+        uploadMediaFile(file, (pct) => setUploadProgress(pct)),
+      ]);
+      setMediaList(prev => [
+        ...prev,
+        {
+          type: 'video',
+          url: uploaded.url,
+          name: file.name,
+          durationSeconds,
+        },
+      ]);
+    } catch (err: any) {
+      setUploadError(err?.message || 'Failed to upload video');
+    } finally {
+      setUploadProgress(null);
+    }
+    e.target.value = '';
+  };
+
+  const handleQuickPostSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quickText.trim() && mediaList.length === 0) {
+    if (!quickText.trim() && !quickTitle.trim() && mediaList.length === 0) {
       onOpenCreateModal();
       return;
     }
 
     if (onDirectPost) {
       setIsPosting(true);
-      const isVideo = mediaList.some(m => m.type === 'video');
-      onDirectPost({
-        content: quickText.trim() || 'Shared media update',
-        type: isVideo ? 'video' : 'post',
-        tags: ['#COOK', '#Startups', '#BuildingInPublic'],
+      const videoItem = mediaList.find(m => m.type === 'video');
+      await onDirectPost({
+        title: quickTitle.trim() || undefined,
+        content: quickText.trim() || quickTitle.trim() || 'Shared media update',
+        type: videoItem ? 'video' : 'post',
+        tags: videoItem ? ['#COOK', '#Video', '#Startups'] : ['#COOK', '#Startups', '#BuildingInPublic'],
         media: mediaList.length > 0 ? mediaList.map(m => ({ type: m.type, url: m.url, caption: m.name })) : undefined,
+        videoDurationSeconds: videoItem?.durationSeconds,
       });
+      setQuickTitle('');
       setQuickText('');
       setMediaList([]);
       setIsPosting(false);
@@ -148,8 +159,13 @@ export const Feed: React.FC<FeedProps> = ({
     }
   };
 
+  const displayedPosts =
+    activeFilter === 'Videos'
+      ? posts.filter(p => p.type === 'video' || Boolean(p.media?.some(m => m.type === 'video')))
+      : posts;
+
   return (
-    <section className="flex-1 max-w-3xl space-y-5 pb-16">
+    <section className="w-full flex-1 min-w-0 max-w-2xl xl:max-w-3xl space-y-4 sm:space-y-5 pb-6">
       {/* 24-Hour Stories Bar */}
       <StoriesBar currentUser={user} />
 
@@ -209,22 +225,55 @@ export const Feed: React.FC<FeedProps> = ({
               <p className="text-xs text-gray-400 mb-2">
                 Share an idea, startup pitch, prototype video, question, or story...
               </p>
+              {mediaList.some(m => m.type === 'video') && (
+                <input
+                  type="text"
+                  value={quickTitle}
+                  onChange={e => setQuickTitle(e.target.value)}
+                  placeholder="Add a video title..."
+                  className="w-full mb-2 px-3.5 py-2 text-xs sm:text-sm bg-[#0B0F19] border border-[#1F293D] rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5E1E]"
+                />
+              )}
               <textarea
                 rows={mediaList.length > 0 ? 3 : 2}
                 value={quickText}
                 onChange={e => setQuickText(e.target.value)}
-                placeholder="Got an idea? Type here or choose photos/video from your computer to let it cook..."
+                placeholder="Got an idea? Type here or upload photos/videos to share on COOK..."
                 className="w-full px-3.5 py-2.5 text-xs sm:text-sm bg-[#0B0F19] border border-[#1F293D] rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5E1E] transition resize-none"
               />
             </div>
           </div>
+
+          {uploadProgress !== null && (
+            <div className="mb-3 p-3 rounded-xl bg-[#0B0F19] border border-indigo-500/40 space-y-1.5">
+              <div className="flex items-center justify-between text-xs text-indigo-300 font-semibold">
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Uploading media to COOK...</span>
+                </span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-gray-800 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-500 to-[#FF5E1E] transition-all"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {uploadError && (
+            <p className="mb-3 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2">
+              {uploadError}
+            </p>
+          )}
 
           {/* Attached Media Previews inside Feed Composer */}
           {mediaList.length > 0 && (
             <div className="mb-3 p-3 bg-[#0B0F19] rounded-xl border border-gray-800 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-semibold text-gray-300">
-                  Ready to post from this computer ({mediaList.length}):
+                  Uploaded media ({mediaList.length}):
                 </span>
                 <button
                   type="button"
@@ -250,6 +299,7 @@ export const Feed: React.FC<FeedProps> = ({
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                     <span className="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] text-white truncate max-w-[85%]">
+                      {m.durationSeconds ? `${formatDuration(m.durationSeconds)} • ` : ''}
                       {m.name}
                     </span>
                   </div>
@@ -259,34 +309,34 @@ export const Feed: React.FC<FeedProps> = ({
           )}
 
           {/* Media Buttons & Actions Row */}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#1F293D]/70">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-[#1F293D]/70">
             <div className="flex flex-wrap items-center gap-1.5">
-              {/* Photo directly from computer */}
+              {/* Photo upload */}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="px-2.5 py-1.5 rounded-lg bg-[#0B0F19] hover:bg-white/5 border border-gray-800 text-gray-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition active:scale-95"
-                title="Select photo from this computer"
+                className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#0B0F19] hover:bg-white/5 border border-gray-800 text-gray-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition active:scale-95 whitespace-nowrap cursor-pointer"
+                title="Upload photo"
               >
                 <Camera className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Photo from PC</span>
+                <span>Photo</span>
               </button>
 
-              {/* Video directly from computer */}
+              {/* Video upload */}
               <button
                 type="button"
                 onClick={() => videoInputRef.current?.click()}
-                className="px-2.5 py-1.5 rounded-lg bg-[#0B0F19] hover:bg-white/5 border border-gray-800 text-gray-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition active:scale-95"
-                title="Select video from this computer"
+                className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#0B0F19] hover:bg-white/5 border border-gray-800 text-gray-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition active:scale-95 whitespace-nowrap cursor-pointer"
+                title="Upload video"
               >
                 <Film className="w-3.5 h-3.5 text-rose-400" />
-                <span>Video from PC</span>
+                <span>Video</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => onOpenCreateModal('poll')}
-                className="px-2.5 py-1.5 rounded-lg bg-[#0B0F19] hover:bg-white/5 border border-gray-800 text-gray-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition"
+                className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#0B0F19] hover:bg-white/5 border border-gray-800 text-gray-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition whitespace-nowrap cursor-pointer"
               >
                 <BarChart2 className="w-3.5 h-3.5 text-amber-400" />
                 <span>Poll</span>
@@ -295,7 +345,7 @@ export const Feed: React.FC<FeedProps> = ({
               <button
                 type="button"
                 onClick={onOpenRaiseFundsModal}
-                className="px-2.5 py-1.5 rounded-lg bg-[#FF5E1E]/15 hover:bg-[#FF5E1E]/25 border border-[#FF5E1E]/30 text-[#FF5E1E] text-xs font-bold flex items-center gap-1.5 transition"
+                className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#FF5E1E]/15 hover:bg-[#FF5E1E]/25 border border-[#FF5E1E]/30 text-[#FF5E1E] text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap cursor-pointer"
               >
                 <DollarSign className="w-3.5 h-3.5" />
                 <span>Raise Funds</span>
@@ -305,7 +355,7 @@ export const Feed: React.FC<FeedProps> = ({
             <button
               type="submit"
               disabled={isPosting}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition cursor-pointer active:scale-95"
+              className="min-h-[38px] w-full sm:w-auto justify-center px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition cursor-pointer active:scale-95 whitespace-nowrap"
             >
               <span>{isPosting ? 'Posting...' : 'Post to Feed'}</span>
               <Send className="w-3.5 h-3.5" />
@@ -337,34 +387,40 @@ export const Feed: React.FC<FeedProps> = ({
 
       {/* Posts Stream */}
       <div className="space-y-4">
-        {posts.length === 0 ? (
+        {displayedPosts.length === 0 ? (
           <div className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-8 text-center space-y-3">
             <div className="w-12 h-12 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto">
               <Sparkles className="w-6 h-6" />
             </div>
-            <h3 className="font-bold text-white text-base">Nothing cooking in this filter yet</h3>
+            <h3 className="font-bold text-white text-base">
+              {activeFilter === 'Videos' ? 'No videos uploaded yet' : 'Nothing cooking in this filter yet'}
+            </h3>
             <p className="text-xs text-gray-400 max-w-sm mx-auto">
-              Be the first to share a breakthrough idea, startup pitch, or project update with the COOK community.
+              {activeFilter === 'Videos'
+                ? 'Upload a product demo, pitch video, or founder update to share with the community.'
+                : 'Be the first to share a breakthrough idea, startup pitch, or project update with the COOK community.'}
             </p>
             <button
-              onClick={() => onOpenCreateModal()}
+              onClick={() => onOpenCreateModal(activeFilter === 'Videos' ? 'video' : 'post')}
               className="py-2 px-4 rounded-xl bg-[#6366F1] text-white text-xs font-semibold"
             >
-              Start Cooking Now
+              {activeFilter === 'Videos' ? 'Upload First Video' : 'Start Cooking Now'}
             </button>
           </div>
         ) : (
-          posts.map(post => (
+          displayedPosts.map(post => (
             <PostCard
               key={post.id}
               post={post}
+              currentUserId={user.id}
               onLike={onLike}
               onSave={onSave}
               onRepost={onRepost}
               onShare={onShare}
               onDelete={onDelete}
               onAddComment={onAddComment}
-              onFilterTag={tag => setActiveFilter('Startups')}
+              onVideoView={onVideoView}
+              onFilterTag={_tag => setActiveFilter('Startups')}
               onViewStartup={onViewStartup}
             />
           ))

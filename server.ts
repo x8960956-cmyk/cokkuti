@@ -1,10 +1,12 @@
 import express from 'express';
+import http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
-import { db, Story, StoryComment } from './server_db.js';
+import { db, Story, StoryComment, MODERATOR_EMAIL, isModeratorUser } from './server_db.js';
 
 dotenv.config();
 
@@ -14,17 +16,65 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
-
-// Ensure persistent uploads directory exists and is served statically
+// Ensure persistent uploads directory exists and is served statically (with range support for video seeking)
 const uploadsDir = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
-app.use('/uploads', express.static(uploadsDir));
+app.use('/uploads', express.static(uploadsDir, { acceptRanges: true }));
 
-// Real File Upload API - permanently writes uploaded files from computer/device to disk
+// Raw binary upload endpoint for large videos and photos (fast, zero base64 bloat)
+app.post(
+  '/api/upload/raw',
+  express.raw({
+    type: ['video/*', 'image/*', 'application/octet-stream'],
+    limit: '60mb',
+  }),
+  (req, res) => {
+    try {
+      const buffer = req.body;
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        return res.status(400).json({ error: 'Empty file upload' });
+      }
+      const mimeType = String(req.headers['content-type'] || 'video/mp4').toLowerCase();
+      const origName = String(req.headers['x-file-name'] || 'upload').replace(/[^a-zA-Z0-9._-]/g, '_');
+
+      let ext = 'mp4';
+      if (mimeType.includes('webm')) ext = 'webm';
+      else if (mimeType.includes('quicktime') || origName.toLowerCase().endsWith('.mov')) ext = 'mov';
+      else if (mimeType.includes('ogg')) ext = 'ogv';
+      else if (mimeType.includes('png')) ext = 'png';
+      else if (mimeType.includes('webp')) ext = 'webp';
+      else if (mimeType.includes('gif')) ext = 'gif';
+      else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
+      else if (origName.includes('.')) {
+        const candidate = origName.split('.').pop()?.toLowerCase();
+        if (candidate && /^[a-z0-9]{2,5}$/.test(candidate)) ext = candidate;
+      }
+
+      const base = origName.replace(/\.[^.]+$/, '').substring(0, 30) || 'media';
+      const uniqueFilename = `${base}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+      const filePath = path.resolve(uploadsDir, uniqueFilename);
+      fs.writeFileSync(filePath, buffer);
+
+      res.json({
+        success: true,
+        url: `/uploads/${uniqueFilename}`,
+        filename: uniqueFilename,
+        size: buffer.length,
+        mimeType,
+      });
+    } catch (err: any) {
+      console.error('Raw File Upload Error:', err);
+      res.status(500).json({ error: 'Failed to save uploaded media', details: err?.message });
+    }
+  }
+);
+
+app.use(express.json({ limit: '60mb' }));
+app.use(express.urlencoded({ extended: true, limit: '60mb' }));
+
+// Real File Upload API (JSON base64 fallback) - permanently writes uploaded files to disk
 app.post('/api/upload', (req, res) => {
   try {
     const { dataUrl, filename: reqFilename, name } = req.body;
@@ -32,7 +82,7 @@ app.post('/api/upload', (req, res) => {
       return res.status(400).json({ error: 'File data URL is required' });
     }
 
-    const matches = dataUrl.match(/^data:([A-Za-z0-9-+/]+);base64,(.+)$/);
+    const matches = dataUrl.match(/^data:([A-Za-z0-9-+/.]+)(?:;[^,]*)?;base64,(.+)$/);
     if (!matches || matches.length !== 3) {
       return res.status(400).json({ error: 'Invalid file data format' });
     }
@@ -41,8 +91,8 @@ app.post('/api/upload', (req, res) => {
     const base64Data = matches[2];
     const buffer = Buffer.from(base64Data, 'base64');
 
-    if (buffer.length > 25 * 1024 * 1024) {
-      return res.status(400).json({ error: 'File size exceeds 25MB limit' });
+    if (buffer.length > 60 * 1024 * 1024) {
+      return res.status(400).json({ error: 'File size exceeds 60MB limit' });
     }
 
     let ext = 'jpg';
@@ -51,6 +101,7 @@ app.post('/api/upload', (req, res) => {
     else if (mimeType.includes('gif')) ext = 'gif';
     else if (mimeType.includes('mp4')) ext = 'mp4';
     else if (mimeType.includes('webm')) ext = 'webm';
+    else if (mimeType.includes('quicktime')) ext = 'mov';
     else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
 
     const cleanName = (name || reqFilename || 'media')
@@ -152,409 +203,105 @@ interface Post {
   };
 }
 
-let posts: Post[] = [
-  {
-    id: 'post-1',
-    author: {
-      id: 'sarah-ahmed',
-      name: 'Sarah Ahmed',
-      username: 'sarah.design',
-      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-      role: 'Product Designer | Creative Thinker',
-      verified: true,
-    },
-    type: 'post',
-    content: "Just launched my new design portfolio! 🚀 Worked on some exciting projects including a sustainable brand, mobile app UI, and illustrations. Would love your feedback! Let's build something bold together.",
-    tags: ['#Design', '#UIUX', '#Portfolio', '#Creative', '#ProductDesign'],
-    media: [
-      {
-        type: 'image',
-        url: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80',
-        caption: 'Designs that make an impact',
-      },
-      {
-        type: 'image',
-        url: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=800&auto=format&fit=crop&q=80',
-      },
-      {
-        type: 'image',
-        url: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=800&auto=format&fit=crop&q=80',
-      },
-      {
-        type: 'image',
-        url: 'https://images.unsplash.com/photo-1542744094-24638eff58bb?w=800&auto=format&fit=crop&q=80',
-      },
-    ],
-    likes: 243,
-    likedByMe: true,
-    comments: [
-      {
-        id: 'c-1',
-        author: {
-          name: 'Arjun Mehta',
-          avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-          role: 'Full Stack Developer',
-          verified: true,
-        },
-        content: 'The glassmorphic dashboard animations look pristine. Sent you a DM regarding a collaboration!',
-        timestamp: '1h ago',
-        likes: 14,
-      },
-      {
-        id: 'c-2',
-        author: {
-          name: 'David Kim',
-          avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-          role: 'Founder @ MedlAI',
-          verified: false,
-        },
-        content: 'Love the typography hierarchy and color contrast. Very sharp!',
-        timestamp: '30m ago',
-        likes: 5,
-      },
-    ],
-    reposts: 18,
-    saves: 42,
-    shareCount: 29,
-    timestamp: '2h ago',
-    category: 'Design & Creativity',
-  },
-  {
-    id: 'post-2',
-    author: {
-      id: 'technova-team',
-      name: 'TechNova',
-      username: 'technova',
-      avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
-      role: 'Startup | EdTech AI',
-      verified: true,
-    },
-    type: 'pitch',
-    title: 'AI-Powered Personalized Study Assistant',
-    content: "We're building an AI study assistant that helps students learn 3x faster, understand complex concepts through interactive visual mental models, and track cognitive mastery. We're actively raising our Seed round!",
-    tags: ['#Education', '#AI', '#EdTech', '#MVP', '#Fundraising'],
-    media: [
-      {
-        type: 'image',
-        url: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=800&auto=format&fit=crop&q=80',
-      },
-    ],
-    startupDetails: {
-      name: 'TechNova',
-      tagline: 'Hyper-personalized learning paths powered by cognitive AI',
-      stage: 'MVP',
-      industry: 'Education & AI',
-      fundingGoal: '$250K',
-      equityOffered: '12%',
-      runway: '6 months',
-      amountRaised: '$80K (32%)',
-      teamNeeded: ['Senior Full-Stack Engineers', 'UI/UX Lead', 'Growth Marketer'],
-    },
-    likes: 186,
-    likedByMe: false,
-    comments: [
-      {
-        id: 'c-3',
-        author: {
-          name: 'Elena Rostova',
-          avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-          role: 'Angel Investor @ BlueHorizon VC',
-          verified: true,
-        },
-        content: 'Interesting traction metrics! Checked out your pitch deck. Requesting an intro call.',
-        timestamp: '2h ago',
-        likes: 21,
-      },
-    ],
-    reposts: 24,
-    saves: 56,
-    shareCount: 45,
-    timestamp: '3h ago',
-    category: 'Startups',
-  },
-  {
-    id: 'post-3',
-    author: {
-      id: 'david-kim',
-      name: 'David Kim',
-      username: 'davidkim',
-      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-      role: 'Founder | Builder | Lifelong Learner',
-      verified: true,
-    },
-    type: 'post',
-    title: 'The Complete Guide to Building an MVP in 14 Days',
-    content: 'Just published a detailed guide on building MVPs. Step-by-step guide to turn your raw idea into a working product without wasting 6 months in analysis paralysis. What was the hardest part when launching your first MVP?',
-    tags: ['#Startups', '#MVP', '#BuildingInPublic', '#Product'],
-    media: [
-      {
-        type: 'image',
-        url: 'https://images.unsplash.com/photo-1559526324-4b87b5e36e44?w=800&auto=format&fit=crop&q=80',
-      },
-    ],
-    poll: {
-      question: 'What is your biggest blocker to launching your MVP?',
-      options: [
-        { text: 'Finding technical co-founder', votes: 142 },
-        { text: 'Securing initial pre-seed funding', votes: 98 },
-        { text: 'Validating real customer demand', votes: 210 },
-        { text: 'Building user acquisition loops', votes: 76 },
-      ],
-      totalVotes: 526,
-      userVote: 2,
-    },
-    likes: 312,
-    likedByMe: true,
-    comments: [],
-    reposts: 37,
-    saves: 88,
-    shareCount: 64,
-    timestamp: '5h ago',
-    category: 'Opportunities',
-  },
-  {
-    id: 'post-4',
-    author: {
-      id: 'priya-sharma',
-      name: 'Priya Sharma',
-      username: 'priya_sharma',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      role: 'Artist | Designer | Dreamer',
-      verified: true,
-    },
-    type: 'video',
-    title: 'Digital Artwork Timelapse: Floating Solitude',
-    content: 'Just finished my latest digital artwork! 🎨 Inspired by the beauty of nature and the calm it brings. Created with generative brushes and hand shading. What do you think? Would love to hear your thoughts! ✨',
-    tags: ['#Art', '#DigitalArt', '#Nature', '#Creator', '#COOKClips'],
-    media: [
-      {
-        type: 'video',
-        url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-        aspect: '16:9',
-      },
-    ],
-    likes: 248,
-    likedByMe: true,
-    comments: [],
-    reposts: 34,
-    saves: 61,
-    shareCount: 19,
-    timestamp: '2h ago',
-    category: 'Design & Creativity',
-  },
-];
+// Real Persistent Multi-User Feed (No fake posts)
+let posts: Post[] = db.getPosts();
 
-// Funding requests store
-let fundingRequests = [
-  {
-    id: 'fund-1',
-    startupName: 'TechNova',
-    logo: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
-    founderName: 'Arjun Mehta & Sneha Iyer',
-    founderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-    tagline: 'Cognitive AI platform generating dynamic interactive knowledge graphs for STEM students',
-    description: 'TechNova solves the retention crisis in higher education by converting dense textbooks into interactive voice-and-simulation micro-modules. 12,000 active beta users across 14 universities.',
-    problem: 'Students struggle with rote memorization and high drop-out rates in rigorous STEM courses without personalized feedback loops.',
-    solution: 'Proprietary knowledge engine that parses syllabi and generates real-time interactive simulations and cognitive diagnostic quizzes.',
-    targetAudience: 'University STEM students, higher-ed institutions, professional bootcamp learners.',
-    industry: 'Education & AI',
-    stage: 'MVP',
-    fundingGoal: 250000,
-    amountRaised: 80000,
-    amountSeeking: 170000,
-    equityOffered: '12%',
-    runwayMonths: 6,
-    investorTypeSought: ['Angel Investor', 'Seed Fund', 'Strategic Partner'],
-    useOfFunds: '60% Product & Engineering hiring, 25% Growth & Campus Ambassador channels, 15% GPU Compute & Infrastructure.',
-    pitchDeckUrl: 'https://technova.ai/deck.pdf',
-    videoPitchUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-    traction: '12k Monthly Active Students, 42% 30-day retention, $4.2K MRR organically.',
-    status: 'Seeking Funding',
-    verified: true,
-    interestedCount: 38,
-    savedCount: 94,
-    tags: ['EdTech', 'Generative AI', 'STEM', 'B2C / B2B2C'],
-  },
-  {
-    id: 'fund-2',
-    startupName: 'NovaLearn',
-    logo: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=150&auto=format&fit=crop&q=80',
-    founderName: 'Sarah Ahmed & David Kim',
-    founderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-    tagline: 'AI-Powered Adaptive Learning & Career Readiness Platform',
-    description: 'NovaLearn partners with fast-scaling tech companies to create guaranteed-hire apprenticeship simulations powered by LLM mentors.',
-    problem: 'Traditional tech bootcamps have 85% placement drop-off; companies spend $15k per entry hire onboarding.',
-    solution: 'Simulated day-in-the-life code reviews, agile sprints, and real production pull request reviews scored in real-time.',
-    targetAudience: 'Career changers, computer science graduates, hiring enterprise engineering managers.',
-    industry: 'EdTech / HRTech',
-    stage: 'Early Traction',
-    fundingGoal: 500000,
-    amountRaised: 190000,
-    amountSeeking: 310000,
-    equityOffered: '10%',
-    runwayMonths: 12,
-    investorTypeSought: ['Venture Capital', 'Angel Investor'],
-    useOfFunds: '50% Enterprise Sales, 35% Platform R&D, 15% Operations.',
-    pitchDeckUrl: 'https://novalearn.io/deck.pdf',
-    videoPitchUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-    traction: '$18k MRR, 4 signed corporate hiring partners, 150 placements.',
-    status: 'In Discussion',
-    verified: true,
-    interestedCount: 64,
-    savedCount: 142,
-    tags: ['HRTech', 'Enterprise', 'Workforce', 'AI Coaching'],
-  },
-  {
-    id: 'fund-3',
-    startupName: 'GreenCycle',
-    logo: 'https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?w=150&auto=format&fit=crop&q=80',
-    founderName: 'Marcus Vance',
-    founderAvatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150&auto=format&fit=crop&q=80',
-    tagline: 'Automated Computer-Vision Optical Sorting for Plastic Recycling Facilities',
-    description: 'Hardware + AI edge units that increase recycled polymer purity by 40%, unlocking tier-1 food packaging resale.',
-    problem: '91% of plastic waste is downcycled or landfilled due to polymer contamination in optical sorting streams.',
-    solution: 'High-speed hyperspectral computer vision sensors mounted on retrofitted sorter lines at 1/5th traditional cost.',
-    targetAudience: 'Municipal waste recovery facilities, global plastics reclaimers.',
-    industry: 'CleanTech & Hardware',
-    stage: 'Prototype',
-    fundingGoal: 350000,
-    amountRaised: 110000,
-    amountSeeking: 240000,
-    equityOffered: '15%',
-    runwayMonths: 8,
-    investorTypeSought: ['Climate Fund', 'Seed Fund', 'Grant Provider'],
-    useOfFunds: 'Pilot deployments, sensor fabrication, patent filings.',
-    pitchDeckUrl: 'https://greencycle.eco/deck.pdf',
-    videoPitchUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    traction: 'LOIs from 3 regional recycling plants, patent pending.',
-    status: 'Seeking Funding',
-    verified: true,
-    interestedCount: 29,
-    savedCount: 71,
-    tags: ['CleanTech', 'Computer Vision', 'Robotics', 'Hardware'],
-  },
-  {
-    id: 'fund-4',
-    startupName: 'MedlAI',
-    logo: 'https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?w=150&auto=format&fit=crop&q=80',
-    founderName: 'Dr. Evelyn Tan & Alex Chen',
-    founderAvatar: 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=150&auto=format&fit=crop&q=80',
-    tagline: 'Ambient Clinical AI Assistant for Specialty Ambulatory Clinics',
-    description: 'Translates physician-patient dialogues into structured EHR medical charts and pre-authorization submissions in seconds.',
-    problem: 'Doctors spend 2.5 hours per day on clerical paperwork, burning out and reducing patient capacity.',
-    solution: 'HIPAA-compliant, multi-accent ambient voice scribe fine-tuned on 20+ medical sub-specialties.',
-    targetAudience: 'Private specialty clinics, orthopedic groups, oncology networks.',
-    industry: 'HealthTech & AI',
-    stage: 'Revenue Generating',
-    fundingGoal: 750000,
-    amountRaised: 450000,
-    amountSeeking: 300000,
-    equityOffered: '8%',
-    runwayMonths: 14,
-    investorTypeSought: ['HealthTech VC', 'Strategic Partner', 'Angel Syndicate'],
-    useOfFunds: 'SOC2 Type II compliance, EHR integrations, sales team.',
-    pitchDeckUrl: 'https://medlai.health/deck.pdf',
-    videoPitchUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-    traction: '$42K ARR, 90 daily physician users, 0 churn across 6 months.',
-    status: 'Seeking Funding',
-    verified: true,
-    interestedCount: 52,
-    savedCount: 118,
-    tags: ['HealthTech', 'B2B SaaS', 'Speech AI', 'Medical'],
-  },
-];
+// Real Persistent Funding Requests (No fake funding pitches)
+let fundingRequests: any[] = db.getFundings();
 
-// COOK Clips store
-let clips = [
-  {
-    id: 'clip-1',
-    creator: {
-      name: 'Priya Sharma',
-      username: 'priya_sharma',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      role: 'Creative Technologist',
-      verified: true,
-    },
-    title: 'How we built a 100k user app with zero ad spend 💡',
-    description: 'Here are the 3 viral loop strategies we engineered straight into our product onboarding. #buildinpublic #startups #growth',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-    likes: 4210,
-    commentsCount: 382,
-    sharesCount: 914,
-    views: '89.4K',
-    tags: ['#startups', '#viral', '#growth', '#mvp'],
-  },
-  {
-    id: 'clip-2',
-    creator: {
-      name: 'Arjun Mehta',
-      username: 'arjun_builds',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      role: 'Founder & Full-Stack Lead',
-      verified: true,
-    },
-    title: 'Pitching your seed round? Never say these 3 things to VCs! 🚫',
-    description: 'Top mistakes early founders make when discussing TAM, competitors, and valuation caps. Watch till the end! #venturecapital #pitch',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-    likes: 8940,
-    commentsCount: 712,
-    sharesCount: 1820,
-    views: '142K',
-    tags: ['#fundraising', '#investors', '#pitchdeck'],
-  },
-  {
-    id: 'clip-3',
-    creator: {
-      name: 'NovaLearn Engineering',
-      username: 'novalearn_hq',
-      avatar: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=150&auto=format&fit=crop&q=80',
-      role: 'EdTech Creators',
-      verified: true,
-    },
-    title: 'Live product demo: Generating real-time code sandboxes with AI ⚡️',
-    description: 'Peek behind our reactive container architecture. Latency went from 8s down to 240ms! #tech #engineering #ai',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4',
-    likes: 3120,
-    commentsCount: 198,
-    sharesCount: 654,
-    views: '54.2K',
-    tags: ['#coding', '#software', '#techdemo'],
-  },
-];
+// ==========================================
+// REAL-TIME WEBSOCKET HUB (Presence, 1:1 Chat & Live Notifications)
+// ==========================================
+const userSockets = new Map<string, Set<WebSocket>>();
 
-// Messages store
-let messages = [
-  {
-    id: 'msg-1',
-    conversationId: 'conv-1',
-    senderId: 'sarah-ahmed',
-    senderName: 'Sarah Ahmed',
-    senderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-    content: "Hey Arjun! Loved your latest post on TechNova. Are you open to discussing the UI system for the mobile app?",
-    timestamp: '10:42 AM',
-    isMe: false,
-  },
-  {
-    id: 'msg-2',
-    conversationId: 'conv-1',
-    senderId: 'me',
-    senderName: 'Arjun Mehta',
-    senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-    content: "Hey Sarah! Absolutely. We're finalizing the design tokens right now. Would love to hop on a quick COOK video call today?",
-    timestamp: '10:45 AM',
-    isMe: true,
-  },
-  {
-    id: 'msg-3',
-    conversationId: 'conv-1',
-    senderId: 'sarah-ahmed',
-    senderName: 'Sarah Ahmed',
-    senderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-    content: "Sounds great! Ready whenever you hit the call button.",
-    timestamp: '10:48 AM',
-    isMe: false,
-  },
-];
+function sendWsToUser(userId: string, event: string, payload: any) {
+  const sockets = userSockets.get(userId);
+  if (!sockets || sockets.size === 0) return;
+  const serialized = JSON.stringify({ event, payload });
+  sockets.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(serialized);
+    }
+  });
+}
+
+function broadcastOnlinePresence() {
+  const onlineUserIds = Array.from(userSockets.keys());
+  const serialized = JSON.stringify({
+    event: 'presence:update',
+    payload: { onlineUserIds },
+  });
+  userSockets.forEach((sockets) => {
+    sockets.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(serialized);
+      }
+    });
+  });
+}
+
+function broadcastWsAll(event: string, payload: any) {
+  const serialized = JSON.stringify({ event, payload });
+  userSockets.forEach((sockets) => {
+    sockets.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(serialized);
+      }
+    });
+  });
+}
+
+function emitNotification(notif: any) {
+  db.addNotification(notif);
+  if (notif.recipientId) {
+    sendWsToUser(notif.recipientId, 'notification:new', { notification: notif });
+  }
+  return notif;
+}
+
+// Helper: fire optional WhatsApp webhook configured by moderator
+async function dispatchModeratorWhatsAppWebhook(loginEvent: any) {
+  try {
+    const settings = db.getModeratorSettings();
+    if (!settings?.whatsappWebhookUrl) return;
+    await fetch(settings.whatsappWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 'cook_user_login',
+        phone: settings.whatsappPhone,
+        text: `COOK Login Alert: ${loginEvent.name} (${loginEvent.email}) signed in via ${loginEvent.provider} at ${loginEvent.isoTime}`,
+        loginEvent,
+      }),
+    });
+  } catch (err) {
+    console.warn('WhatsApp webhook dispatch notice:', err);
+  }
+}
+
+function notifyModeratorOnLogin(user: any, provider: string, isNewUser: boolean) {
+  const evt = db.recordLoginEvent(user, provider, isNewUser);
+  const mod = db.getModeratorUser();
+  if (mod && mod.id !== user.id) {
+    emitNotification({
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      recipientId: mod.id,
+      actorId: user.id,
+      actorName: user.name || user.email,
+      actorAvatar: user.avatar || '',
+      type: 'system',
+      title: isNewUser ? 'New User Registered' : 'User Signed In',
+      message: `${user.name} (${user.email}) logged in via ${provider}.`,
+      targetId: user.id,
+      targetType: 'moderator',
+      read: false,
+      createdAt: Date.now(),
+      timestamp: 'Just now',
+    });
+  }
+  dispatchModeratorWhatsAppWebhook(evt);
+  return evt;
+}
 
 // Helper to decode Google Identity Services JWT token
 function decodeGoogleJwt(jwt: string): any | null {
@@ -619,8 +366,8 @@ app.get('/sitemap.xml', (req, res) => {
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>${host}/profile/arjun_builds</loc>
-    <changefreq>weekly</changefreq>
+    <loc>${host}/discover</loc>
+    <changefreq>daily</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
@@ -680,12 +427,14 @@ app.post('/api/auth/google', (req, res) => {
     });
 
     user.profileCompletionPercentage = computeCompletion(user);
+    const loginEvent = notifyModeratorOnLogin(user, 'google', isNewUser);
 
     return res.json({
       success: true,
       token,
       user,
       isNewUser,
+      loginEvent,
       onboardingCompleted: Boolean(user.onboardingCompleted),
       onboardingStep: user.onboardingStep || 1,
     });
@@ -708,12 +457,14 @@ app.post('/api/auth/email-signup', (req, res) => {
 
     const { user, token } = db.registerEmailUser({ email, password, name });
     user.profileCompletionPercentage = computeCompletion(user);
+    const loginEvent = notifyModeratorOnLogin(user, 'email', true);
 
     return res.json({
       success: true,
       token,
       user,
       isNewUser: true,
+      loginEvent,
       onboardingCompleted: false,
       onboardingStep: 1,
     });
@@ -733,11 +484,13 @@ app.post('/api/auth/email-login', (req, res) => {
 
     const { user, token } = db.loginEmailUser(email, password);
     user.profileCompletionPercentage = computeCompletion(user);
+    const loginEvent = notifyModeratorOnLogin(user, 'email', false);
 
     return res.json({
       success: true,
       token,
       user,
+      loginEvent,
       onboardingCompleted: Boolean(user.onboardingCompleted),
       onboardingStep: user.onboardingStep || 1,
     });
@@ -834,7 +587,12 @@ app.post('/api/profile/complete', (req, res) => {
     return res.status(401).json({ error: 'Please sign in to complete your profile.' });
   }
 
-  const updates = req.body;
+  const updates = req.body || {};
+  delete updates.id;
+  delete updates.googleId;
+  delete updates.email;
+  delete updates.authProvider;
+  delete updates.createdAt;
 
   // Validation
   const finalName = updates.name || user.name;
@@ -859,12 +617,17 @@ app.post('/api/profile/complete', (req, res) => {
   const completedUser = db.saveUser({
     ...user,
     ...updates,
+    id: user.id,
+    email: user.email,
+    googleId: user.googleId,
+    authProvider: user.authProvider,
     name: finalName.trim(),
     username: finalUsername.trim().toLowerCase(),
     headline: finalHeadline.trim(),
     bio: finalBio.trim(),
     onboardingCompleted: true,
     onboardingStep: 2,
+    updatedAt: Date.now(),
   });
 
   completedUser.profileCompletionPercentage = computeCompletion(completedUser);
@@ -881,17 +644,30 @@ app.get('/api/profile', (req, res) => {
   return res.json({ user });
 });
 
-// Update Authenticated User Profile
+// Update Authenticated User Profile (Secure, Isolated, Permanent)
 app.put('/api/profile', (req, res) => {
   const user = getAuthUser(req);
   if (!user) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
 
-  const updates = req.body;
+  const updates = req.body || {};
+  // Security protection: Prevent privilege escalation or account hijacking
+  delete updates.id;
+  delete updates.googleId;
+  delete updates.email;
+  delete updates.authProvider;
+  delete updates.createdAt;
+
   const merged = {
     ...user,
     ...updates,
+    id: user.id,
+    email: user.email,
+    googleId: user.googleId,
+    authProvider: user.authProvider,
+    createdAt: user.createdAt,
+    updatedAt: Date.now(),
   };
   merged.profileCompletionPercentage = computeCompletion(merged);
   const updated = db.saveUser(merged);
@@ -986,100 +762,138 @@ app.delete('/api/stories/:id', (req, res) => {
   res.json({ success });
 });
 
-// Communities Endpoints
+// Communities Endpoints (100% real persisted communities)
 app.get('/api/communities', (req, res) => {
-  res.json({ communities: db.getCommunities() });
+  const authUser = getAuthUser(req);
+  res.json({ communities: db.getCommunities(authUser?.id) });
+});
+
+app.post('/api/communities', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const { name, tagline, category = 'Technology', customPhotoUrl, bannerUrl, pinnedPost } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Community name required' });
+
+  const newComm = {
+    id: `comm-${Date.now()}`,
+    name: name.trim(),
+    tagline: (tagline || 'A collective space for COOK builders and creators.').trim(),
+    category,
+    icon: 'Users',
+    customPhotoUrl: customPhotoUrl || undefined,
+    bannerUrl: bannerUrl || undefined,
+    memberIds: [authUser.id],
+    memberCount: '1 member',
+    joined: true,
+    moderators: [authUser.name],
+    creatorId: authUser.id,
+    rules: ['Be respectful', 'Share high signal updates', 'Let it cook'],
+    pinnedPost: pinnedPost || undefined,
+    createdAt: Date.now(),
+  };
+  db.addCommunity(newComm);
+  res.json({ success: true, community: newComm });
+});
+
+app.post('/api/communities/:id/join', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const updated = db.toggleJoinCommunity(req.params.id, authUser.id);
+  if (!updated) return res.status(404).json({ error: 'Community not found' });
+  res.json({ success: true, community: updated });
 });
 
 app.put('/api/communities/:id', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
   const updated = db.updateCommunity(req.params.id, req.body);
   res.json({ success: true, community: updated });
+});
+
+// Opportunities Endpoints (Real User-Posted)
+app.get('/api/opportunities', (req, res) => {
+  res.json({ opportunities: db.getOpportunities() });
+});
+
+app.post('/api/opportunities', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const { title, startup, type = 'Co-founder', location = 'Remote', commitment = 'Full-time', equityOrCompensation = '', skills = [], description = '' } = req.body;
+  if (!title?.trim() || !startup?.trim()) {
+    return res.status(400).json({ error: 'Role title and startup name required' });
+  }
+  const opp = {
+    id: `opp-${Date.now()}`,
+    creatorId: authUser.id,
+    creatorName: authUser.name,
+    title: title.trim(),
+    startup: startup.trim(),
+    logo: authUser.avatar || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
+    type,
+    location,
+    remote: location.toLowerCase().includes('remote'),
+    commitment,
+    equityOrCompensation: equityOrCompensation || 'Equity / Negotiable',
+    skills: Array.isArray(skills) ? skills : [],
+    description,
+    postedDate: 'Just now',
+    createdAt: Date.now(),
+  };
+  db.addOpportunity(opp);
+  res.json({ success: true, opportunity: opp });
+});
+
+// Events Endpoints (Real User-Posted)
+app.get('/api/events', (req, res) => {
+  const authUser = getAuthUser(req);
+  res.json({ events: db.getEvents(authUser?.id) });
+});
+
+app.post('/api/events', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const { title, type = 'Demo Day', date, time, location = 'Virtual', description = '', prizes = '' } = req.body;
+  if (!title?.trim() || !date?.trim()) {
+    return res.status(400).json({ error: 'Event title and date required' });
+  }
+  const evt = {
+    id: `evt-${Date.now()}`,
+    creatorId: authUser.id,
+    title: title.trim(),
+    type,
+    date: date.trim(),
+    time: time || 'TBD',
+    location,
+    isVirtual: location.toLowerCase().includes('virtual') || location.toLowerCase().includes('online'),
+    organizer: authUser.name,
+    attendeeIds: [authUser.id],
+    attendeesCount: 1,
+    attending: true,
+    description,
+    prizes: prizes || undefined,
+    createdAt: Date.now(),
+  };
+  db.addEvent(evt);
+  res.json({ success: true, event: evt });
+});
+
+app.post('/api/events/:id/rsvp', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const updated = db.toggleEventRsvp(req.params.id, authUser.id);
+  if (!updated) return res.status(404).json({ error: 'Event not found' });
+  res.json({ success: true, event: updated });
 });
 
 app.get('/api/profile/:username', (req, res) => {
   const { username } = req.params;
   const user = db.getUserByUsername(username) || (username === 'me' ? getAuthUser(req) : null);
   if (user) {
+    user.profileCompletionPercentage = computeCompletion(user);
     return res.json({ user });
   }
 
-  // Other known users
-  const knownProfiles: Record<string, any> = {
-    sarah_ahmed: {
-      id: 'sarah-ahmed',
-      name: 'Sarah Ahmed',
-      username: 'sarah_ahmed',
-      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&auto=format&fit=crop&q=80',
-      coverImage: 'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=1600&auto=format&fit=crop&q=80',
-      role: 'Designer',
-      primaryRole: 'Lead Product Designer',
-      headline: 'Product Designer & Design Systems Lead • Creating high-fidelity interactions',
-      bio: 'Crafting spatial interfaces, design tokens, and digital brand experiences for venture-backed teams.',
-      location: 'New York, NY',
-      website: 'https://sarahahmed.design',
-      verified: true,
-      followersCount: 1890,
-      followingCount: 340,
-      connectionsCount: 1220,
-      skills: ['UI/UX Design', 'Design Systems', 'Figma', 'Prototyping', 'User Research'],
-      skillItems: [
-        { id: 's1', name: 'UI/UX Design', category: 'Design and Creativity', proficiency: 'Expert', endorsementsCount: 34, featured: true },
-        { id: 's2', name: 'Design Systems', category: 'Design and Creativity', proficiency: 'Expert', endorsementsCount: 28, featured: true },
-      ],
-      experience: [
-        {
-          id: 'e1',
-          title: 'Design Director',
-          company: 'Studio Lumina',
-          employmentType: 'Full-time',
-          workplaceType: 'Hybrid',
-          startDate: '2022',
-          endDate: 'Present',
-          current: true,
-          description: 'Leading product design for 8 consumer and enterprise SaaS products.',
-        },
-      ],
-      education: [
-        {
-          id: 'ed1',
-          institution: 'Rhode Island School of Design (RISD)',
-          degree: 'BFA in Graphic Design',
-          fieldOfStudy: 'Interactive Media',
-          qualificationType: 'Undergraduate Degree',
-          startDate: '2016',
-          endDate: '2020',
-          currentlyStudying: false,
-        },
-      ],
-    },
-  };
-
-  const found = knownProfiles[username];
-  if (found) {
-    return res.json({ user: found });
-  }
-
-  // Generic fallback public profile
-  return res.json({
-    user: {
-      id: `user-${username}`,
-      name: username.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-      username,
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      coverImage: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80',
-      role: 'Startup enthusiast',
-      headline: 'Founder & Builder on COOK',
-      bio: 'Excited about building the next wave of startups on COOK.',
-      location: 'Global',
-      verified: false,
-      followersCount: 42,
-      followingCount: 65,
-      connectionsCount: 30,
-      skills: ['Startups', 'Product', 'Innovation'],
-      experience: [],
-      education: [],
-    },
-  });
+  return res.status(404).json({ error: 'User profile not found.' });
 });
 
 // Experience CRUD
@@ -1124,13 +938,17 @@ app.delete('/api/profile/education/:id', (req, res) => {
   res.json({ success: true, education: user.education });
 });
 
-// Posts
+// Posts: Real Multi-User Feed
 app.get('/api/posts', (req, res) => {
   const { filter, search } = req.query;
+  posts = db.getPosts();
   let result = [...posts];
 
   if (filter === 'Following') {
-    result = result.filter(p => p.author.name === 'Sarah Ahmed' || p.author.name === 'David Kim');
+    const user = getAuthUser(req);
+    if (user) {
+      result = result.filter(p => p.author.id !== user.id);
+    }
   } else if (filter === 'Trending') {
     result.sort((a, b) => b.likes - a.likes);
   } else if (filter === 'New Ideas') {
@@ -1155,70 +973,174 @@ app.get('/api/posts', (req, res) => {
 });
 
 app.post('/api/posts', (req, res) => {
-  const { content, type = 'post', title, tags = [], media = [], startupDetails, poll } = req.body;
-  if (!content) {
-    return res.status(400).json({ error: 'Content is required' });
+  const { content, type = 'post', title, tags = [], media = [], startupDetails, poll, videoDurationSeconds } = req.body;
+  if (!content && (!Array.isArray(media) || media.length === 0)) {
+    return res.status(400).json({ error: 'Content or media is required' });
   }
 
-  const newPost: Post = {
+  const authUser = getAuthUser(req);
+  const author = authUser ? {
+    id: authUser.id,
+    name: authUser.name,
+    username: authUser.username,
+    avatar: authUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    role: authUser.headline || authUser.role || 'Creator',
+    verified: Boolean(authUser.verified),
+  } : {
+    id: 'guest',
+    name: 'COOK Builder',
+    username: 'builder',
+    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    role: 'Founder',
+    verified: false,
+  };
+
+  const isVideoPost = type === 'video' || (Array.isArray(media) && media.some((m: any) => m.type === 'video'));
+
+  const newPost: any = {
     id: `post-${Date.now()}`,
-    author: {
-      id: 'me',
-      name: 'Arjun Mehta',
-      username: 'arjun_builds',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      role: 'Full Stack Developer | Builder',
-      verified: true,
-    },
-    type,
+    author,
+    type: isVideoPost ? 'video' : type,
     title,
-    content,
-    tags: tags.length ? tags : ['#Cooking', '#Startups'],
+    content: content || title || 'Shared a video on COOK',
+    tags: tags.length ? tags : ['#COOK', '#Startups'],
     media,
-    likes: 1,
-    likedByMe: true,
+    likes: 0,
+    likedByMe: false,
     comments: [],
     reposts: 0,
+    repostedByMe: false,
     saves: 0,
+    savedByMe: false,
     shareCount: 0,
+    viewsCount: 0,
+    watchCompletions: 0,
+    viewedBy: [],
+    videoDurationSeconds: typeof videoDurationSeconds === 'number' ? videoDurationSeconds : undefined,
     timestamp: 'Just now',
-    category: type === 'pitch' ? 'Startups' : 'Tech',
+    createdAt: Date.now(),
+    category: type === 'pitch' ? 'Startups' : isVideoPost ? 'Videos' : (tags[0] || 'Tech'),
     startupDetails,
     poll,
   };
 
-  posts.unshift(newPost);
+  db.addPost(newPost);
+  posts = db.getPosts();
   res.json({ post: newPost });
 });
 
-app.post('/api/posts/:id/like', (req, res) => {
-  const post = posts.find(p => p.id === req.params.id);
+app.post('/api/posts/:id/view', (req, res) => {
+  const authUser = getAuthUser(req);
+  const viewerKey = authUser?.id || String(req.body?.viewerKey || req.ip || 'guest');
+  const completed = Boolean(req.body?.completed);
+  const result = db.recordPostView(req.params.id, viewerKey, completed);
+  posts = db.getPosts();
+  if (!result) return res.status(404).json({ error: 'Post not found' });
+
+  broadcastWsAll('post:engagement', {
+    postId: req.params.id,
+    viewsCount: result.viewsCount,
+    watchCompletions: result.watchCompletions,
+  });
+
+  res.json({ success: true, ...result });
+});
+
+app.get('/api/posts/:id/metrics', (req, res) => {
+  posts = db.getPosts();
+  const post: any = posts.find(p => p.id === req.params.id);
   if (!post) return res.status(404).json({ error: 'Post not found' });
+
+  const views = post.viewsCount || 0;
+  const likes = post.likes || 0;
+  const commentsCount = Array.isArray(post.comments) ? post.comments.length : 0;
+  const reposts = post.reposts || 0;
+  const saves = post.saves || 0;
+  const shares = post.shareCount || 0;
+  const watchCompletions = post.watchCompletions || 0;
+  const interactions = likes + commentsCount + reposts + saves + shares;
+  const engagementRate = views > 0 ? Number(((interactions / views) * 100).toFixed(1)) : 0;
+
+  res.json({
+    postId: post.id,
+    viewsCount: views,
+    watchCompletions,
+    likes,
+    commentsCount,
+    reposts,
+    saves,
+    shareCount: shares,
+    engagementRate,
+    durationSeconds: post.videoDurationSeconds || 0,
+  });
+});
+
+app.post('/api/posts/:id/like', (req, res) => {
+  posts = db.getPosts();
+  const post: any = posts.find(p => p.id === req.params.id);
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+  const authUser = getAuthUser(req);
   post.likedByMe = !post.likedByMe;
   post.likes += post.likedByMe ? 1 : -1;
+  if (post.likes < 0) post.likes = 0;
+  db.savePosts(posts);
+
+  // If liked and not self-like, create a real-time notification
+  if (post.likedByMe && authUser && post.author?.id !== authUser.id) {
+    const actorName = authUser.name || 'A builder';
+    const postSnippet = post.title || (post.content ? post.content.substring(0, 45) + '...' : 'your post');
+    emitNotification({
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      recipientId: post.author?.id || 'all',
+      actorId: authUser.id,
+      actorName,
+      actorAvatar: authUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+      type: 'like',
+      title: 'New Like on your post',
+      message: `${actorName} liked "${postSnippet}"`,
+      targetId: post.id,
+      targetType: 'post',
+      read: false,
+      createdAt: Date.now(),
+      timestamp: 'Just now',
+    });
+  }
+
+  broadcastWsAll('post:engagement', { postId: post.id, likes: post.likes });
   res.json({ likes: post.likes, likedByMe: post.likedByMe });
 });
 
 app.post('/api/posts/:id/save', (req, res) => {
+  posts = db.getPosts();
   const post = posts.find(p => p.id === req.params.id);
   if (!post) return res.status(404).json({ error: 'Post not found' });
   post.savedByMe = !post.savedByMe;
   post.saves += post.savedByMe ? 1 : -1;
+  if (post.saves < 0) post.saves = 0;
+  db.savePosts(posts);
+  broadcastWsAll('post:engagement', { postId: post.id, saves: post.saves });
   res.json({ saves: post.saves, savedByMe: post.savedByMe });
 });
 
 app.post('/api/posts/:id/repost', (req, res) => {
+  posts = db.getPosts();
   const post = posts.find(p => p.id === req.params.id);
   if (!post) return res.status(404).json({ error: 'Post not found' });
   post.repostedByMe = !post.repostedByMe;
   post.reposts += post.repostedByMe ? 1 : -1;
+  if (post.reposts < 0) post.reposts = 0;
+  db.savePosts(posts);
+  broadcastWsAll('post:engagement', { postId: post.id, reposts: post.reposts });
   res.json({ reposts: post.reposts, repostedByMe: post.repostedByMe });
 });
 
 app.post('/api/posts/:id/share', (req, res) => {
+  posts = db.getPosts();
   const post = posts.find(p => p.id === req.params.id);
   if (post) {
     post.shareCount = (post.shareCount || 0) + 1;
+    db.savePosts(posts);
+    broadcastWsAll('post:engagement', { postId: post.id, shareCount: post.shareCount });
     return res.json({ shareCount: post.shareCount });
   }
   res.json({ shareCount: 1 });
@@ -1226,50 +1148,86 @@ app.post('/api/posts/:id/share', (req, res) => {
 
 app.post('/api/posts/:id/comment', (req, res) => {
   const { content } = req.body;
+  posts = db.getPosts();
   const post = posts.find(p => p.id === req.params.id);
   if (!post) return res.status(404).json({ error: 'Post not found' });
   if (!content) return res.status(400).json({ error: 'Comment content is required' });
 
+  const authUser = getAuthUser(req);
+  const author = authUser ? {
+    id: authUser.id,
+    name: authUser.name,
+    avatar: authUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    role: authUser.headline || authUser.role || 'Member',
+    verified: Boolean(authUser.verified),
+  } : {
+    id: 'guest',
+    name: 'COOK Member',
+    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    role: 'Member',
+    verified: false,
+  };
+
   const newComment: Comment = {
     id: `c-${Date.now()}`,
-    author: {
-      name: 'Arjun Mehta',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      role: 'Full Stack Developer',
-      verified: true,
-    },
+    author,
     content,
     timestamp: 'Just now',
     likes: 0,
   };
 
   post.comments.push(newComment);
+  db.savePosts(posts);
+
+  // Trigger comment notification to post author
+  if (authUser && post.author?.id !== authUser.id) {
+    const actorName = authUser.name || 'A builder';
+    const commentSnippet = content.length > 50 ? content.substring(0, 50) + '...' : content;
+    emitNotification({
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      recipientId: post.author?.id || 'all',
+      actorId: authUser.id,
+      actorName,
+      actorAvatar: authUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+      type: 'comment',
+      title: 'New comment on your post',
+      message: `${actorName} commented: "${commentSnippet}"`,
+      targetId: post.id,
+      targetType: 'post',
+      read: false,
+      createdAt: Date.now(),
+      timestamp: 'Just now',
+    });
+  }
+
+  broadcastWsAll('post:engagement', { postId: post.id, commentsCount: post.comments.length });
   res.json({ comment: newComment });
 });
 
 app.delete('/api/posts/:id', (req, res) => {
-  const initialLen = posts.length;
-  posts = posts.filter(p => p.id !== req.params.id);
-  res.json({ success: posts.length < initialLen });
+  const success = db.deletePost(req.params.id);
+  posts = db.getPosts();
+  res.json({ success });
 });
 
-// Fundings
+// Fundings: Real Persistent Venture Engine
 app.get('/api/fundings', (req, res) => {
   const { stage, industry, search } = req.query;
+  fundingRequests = db.getFundings();
   let result = [...fundingRequests];
-  if (stage && stage !== 'all') {
-    result = result.filter(f => f.stage.toLowerCase() === String(stage).toLowerCase());
+  if (stage && stage !== 'all' && stage !== 'All') {
+    result = result.filter(f => f.stage && f.stage.toLowerCase() === String(stage).toLowerCase());
   }
-  if (industry && industry !== 'all') {
-    result = result.filter(f => f.industry.toLowerCase().includes(String(industry).toLowerCase()));
+  if (industry && industry !== 'all' && industry !== 'All') {
+    result = result.filter(f => f.industry && f.industry.toLowerCase().includes(String(industry).toLowerCase()));
   }
-  if (search && typeof search === 'string') {
+  if (search && typeof search === 'string' && search.trim()) {
     const q = search.toLowerCase();
     result = result.filter(
       f =>
-        f.startupName.toLowerCase().includes(q) ||
-        f.tagline.toLowerCase().includes(q) ||
-        f.description.toLowerCase().includes(q)
+        (f.startupName && f.startupName.toLowerCase().includes(q)) ||
+        (f.tagline && f.tagline.toLowerCase().includes(q)) ||
+        (f.description && f.description.toLowerCase().includes(q))
     );
   }
   res.json({ fundings: result });
@@ -1281,12 +1239,17 @@ app.post('/api/fundings', (req, res) => {
     return res.status(400).json({ error: 'Startup name and funding goal required' });
   }
 
+  const authUser = getAuthUser(req);
+  const founderName = authUser?.name || data.founderName || 'COOK Founder';
+  const founderAvatar = authUser?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80';
+
   const newFunding = {
     id: `fund-${Date.now()}`,
+    userId: authUser?.id || 'guest',
     startupName: data.startupName,
     logo: data.logo || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
-    founderName: data.founderName || 'Arjun Mehta',
-    founderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    founderName,
+    founderAvatar,
     tagline: data.tagline || 'Next-generation venture cooking on COOK',
     description: data.description || '',
     problem: data.problem || '',
@@ -1305,29 +1268,31 @@ app.post('/api/fundings', (req, res) => {
     videoPitchUrl: data.videoPitchUrl || '',
     traction: data.traction || '',
     status: 'Seeking Funding',
-    verified: false,
-    interestedCount: 1,
+    verified: Boolean(authUser?.verified),
+    interestedCount: 0,
     savedCount: 0,
     tags: data.tags || ['Startup', 'Fundraising'],
+    createdAt: Date.now(),
   };
 
-  fundingRequests.unshift(newFunding);
+  db.addFunding(newFunding);
+  fundingRequests = db.getFundings();
 
-  // Also publish an announcement post to the feed automatically!
+  // Also publish an authentic announcement post to the feed
   const pitchPost: Post = {
     id: `post-${Date.now()}`,
     author: {
-      id: 'me',
+      id: authUser?.id || 'guest',
       name: newFunding.startupName,
-      username: newFunding.startupName.toLowerCase().replace(/\s+/g, ''),
+      username: newFunding.startupName.toLowerCase().replace(/[^a-z0-9_]/g, ''),
       avatar: newFunding.logo,
       role: 'Startup | ' + newFunding.industry,
-      verified: true,
+      verified: Boolean(authUser?.verified),
     },
     type: 'pitch',
     title: newFunding.tagline,
-    content: newFunding.description,
-    tags: ['#Fundraising', '#Startups', `#${newFunding.stage}`, `#${newFunding.industry.replace(/\s+/g, '')}`],
+    content: newFunding.description || `Announcing our new funding round for ${newFunding.startupName} on COOK!`,
+    tags: ['#Fundraising', '#Startups', `#${newFunding.stage.replace(/\s+/g, '')}`, `#${newFunding.industry.replace(/[^a-zA-Z0-9]/g, '')}`],
     startupDetails: {
       name: newFunding.startupName,
       tagline: newFunding.tagline,
@@ -1336,84 +1301,487 @@ app.post('/api/fundings', (req, res) => {
       fundingGoal: `$${Number(newFunding.fundingGoal).toLocaleString()}`,
       equityOffered: newFunding.equityOffered,
       runway: `${newFunding.runwayMonths} months`,
-      amountRaised: `$${Number(newFunding.amountRaised).toLocaleString()} (${Math.round((newFunding.amountRaised / newFunding.fundingGoal) * 100)}%)`,
-      teamNeeded: ['Founding Engineers', 'Growth Marketer'],
+      amountRaised: `$${Number(newFunding.amountRaised).toLocaleString()}`,
+      teamNeeded: ['Founding Engineers', 'Early Collaborators'],
     },
-    likes: 12,
+    likes: 1,
     likedByMe: true,
     comments: [],
-    reposts: 2,
-    saves: 5,
+    reposts: 0,
+    saves: 0,
     shareCount: 0,
     timestamp: 'Just now',
     category: 'Startups',
   };
-  posts.unshift(pitchPost);
+  db.addPost(pitchPost);
+  posts = db.getPosts();
 
   res.json({ funding: newFunding, post: pitchPost });
 });
 
 app.post('/api/fundings/:id/interest', (req, res) => {
+  fundingRequests = db.getFundings();
   const fund = fundingRequests.find(f => f.id === req.params.id);
   if (!fund) return res.status(404).json({ error: 'Funding post not found' });
-  fund.interestedCount += 1;
-  res.json({ success: true, interestedCount: fund.interestedCount });
+  const authUser = getAuthUser(req);
+  fund.interestedCount = (fund.interestedCount || 0) + 1;
+  db.saveFundings(fundingRequests);
+
+  // Trigger funding interest notification to founder
+  const actorName = authUser?.name || 'An investor';
+  const newNotif = emitNotification({
+    id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    recipientId: fund.userId || 'all',
+    actorId: authUser?.id || 'investor',
+    actorName,
+    actorAvatar: authUser?.avatar || 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
+    type: 'funding_interest',
+    title: 'New Investor Interest! 🚀',
+    message: `${actorName} expressed interest in backing ${fund.startupName}!`,
+    targetId: fund.id,
+    targetType: 'funding',
+    read: false,
+    createdAt: Date.now(),
+    timestamp: 'Just now',
+  });
+
+  res.json({ success: true, interestedCount: fund.interestedCount, notification: newNotif });
 });
 
-// Clips
-app.get('/api/clips', (req, res) => {
-  res.json({ clips });
-});
-
-app.post('/api/clips', (req, res) => {
-  const { title, description, videoUrl, tags = [] } = req.body;
-  if (!title || !videoUrl) return res.status(400).json({ error: 'Title and video required' });
-
-  const newClip = {
-    id: `clip-${Date.now()}`,
-    creator: {
-      name: 'Arjun Mehta',
-      username: 'arjun_builds',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      role: 'Full Stack Developer',
-      verified: true,
-    },
-    title,
-    description: description || '',
-    videoUrl,
-    likes: 1,
-    commentsCount: 0,
-    sharesCount: 0,
-    views: '1',
-    tags,
-  };
-  clips.unshift(newClip);
-  res.json({ clip: newClip });
-});
-
-// Messages
+// Messages (Real Persisted P2P Conversations with Privacy Enforcement & WebSocket Delivery)
 app.get('/api/messages', (req, res) => {
-  res.json({ messages });
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.json({ messages: [] });
+  const userMsgs = db.getMessagesForUser(authUser.id).map((m) => ({
+    ...m,
+    isMe: m.senderId === authUser.id,
+  }));
+  res.json({ messages: userMsgs });
 });
 
 app.post('/api/messages', (req, res) => {
-  const { content, conversationId = 'conv-1', mediaUrl, isVoiceNote } = req.body;
+  const { content, conversationId, recipientId, mediaUrl, isVoiceNote } = req.body;
   if (!content && !mediaUrl) return res.status(400).json({ error: 'Message content required' });
 
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Sign in required to send messages' });
+
+  if (recipientId) {
+    const access = db.canUserInitiateChat(authUser.id, recipientId);
+    if (!access.allowed) {
+      return res.status(403).json({
+        error: access.reason || 'Direct messaging is restricted by user privacy settings.',
+        policy: access.policy,
+      });
+    }
+  }
+
+  const resolvedConvId =
+    conversationId || (recipientId ? `dm_${[authUser.id, recipientId].sort().join('_')}` : 'general');
+
   const newMsg = {
-    id: `msg-${Date.now()}`,
-    conversationId,
-    senderId: 'me',
-    senderName: 'Arjun Mehta',
-    senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    id: `msg-${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+    conversationId: resolvedConvId,
+    senderId: authUser.id,
+    recipientId: recipientId || null,
+    senderName: authUser.name || 'COOK Member',
+    senderAvatar: authUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
     content: content || (isVoiceNote ? '🎙️ Voice note' : 'Sent an attachment'),
     mediaUrl,
     isVoiceNote: Boolean(isVoiceNote),
+    read: false,
+    createdAt: Date.now(),
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    isMe: true,
   };
-  messages.push(newMsg);
-  res.json({ message: newMsg });
+  db.addMessage(newMsg);
+
+  // Push real-time message event to both sender and recipient sockets
+  sendWsToUser(authUser.id, 'chat:message', {
+    message: { ...newMsg, isMe: true },
+  });
+  if (recipientId && recipientId !== authUser.id) {
+    sendWsToUser(recipientId, 'chat:message', {
+      message: { ...newMsg, isMe: false },
+    });
+
+    emitNotification({
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      recipientId,
+      actorId: authUser.id,
+      actorName: authUser.name || 'COOK Member',
+      actorAvatar: authUser.avatar || '',
+      type: 'comment',
+      title: 'New Direct Message',
+      message: `${authUser.name} sent you a message: "${newMsg.content.substring(0, 60)}"`,
+      targetId: authUser.id,
+      targetType: 'messages',
+      read: false,
+      createdAt: Date.now(),
+      timestamp: 'Just now',
+    });
+  }
+
+  res.json({ message: { ...newMsg, isMe: true } });
+});
+
+app.post('/api/messages/read', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const { conversationId, partnerId } = req.body || {};
+  if (!conversationId) return res.status(400).json({ error: 'conversationId required' });
+  const updatedCount = db.markConversationRead(conversationId, authUser.id);
+  if (updatedCount > 0 && partnerId) {
+    sendWsToUser(partnerId, 'chat:read', {
+      conversationId,
+      readerId: authUser.id,
+      readAt: Date.now(),
+    });
+  }
+  res.json({ success: true, updatedCount });
+});
+
+// Chat Privacy Controls Endpoint (who can initiate chats & user blocking)
+app.put('/api/chat/privacy', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+
+  const { chatInitiationPolicy, blockUserId, unblockUserId } = req.body || {};
+  const currentPrivacy = authUser.privacySettings || {
+    profileVisibility: 'public',
+    showEmail: false,
+    showEducationGrades: true,
+    showFundingRequests: true,
+    allowDirectMessages: true,
+    chatInitiationPolicy: 'everyone',
+    blockedUserIds: [],
+  };
+
+  let blockedUserIds: string[] = Array.isArray(currentPrivacy.blockedUserIds)
+    ? [...currentPrivacy.blockedUserIds]
+    : [];
+
+  if (blockUserId && blockUserId !== authUser.id && !blockedUserIds.includes(blockUserId)) {
+    blockedUserIds.push(blockUserId);
+  }
+  if (unblockUserId) {
+    blockedUserIds = blockedUserIds.filter((id) => id !== unblockUserId);
+  }
+
+  const nextPolicy =
+    chatInitiationPolicy === 'everyone' ||
+    chatInitiationPolicy === 'connections_only' ||
+    chatInitiationPolicy === 'nobody'
+      ? chatInitiationPolicy
+      : currentPrivacy.chatInitiationPolicy || 'everyone';
+
+  const updatedUser = db.saveUser({
+    ...authUser,
+    privacySettings: {
+      ...currentPrivacy,
+      chatInitiationPolicy: nextPolicy,
+      allowDirectMessages: nextPolicy !== 'nobody',
+      blockedUserIds,
+    },
+  });
+
+  res.json({
+    success: true,
+    privacySettings: updatedUser.privacySettings,
+    user: updatedUser,
+  });
+});
+
+// ==========================================
+// REAL USER CONNECTIONS
+// ==========================================
+app.get('/api/connections', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.json({ connectedUserIds: [] });
+  res.json({ connectedUserIds: db.getConnectionsForUser(authUser.id) });
+});
+
+app.post('/api/connections/toggle', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const { targetUserId } = req.body;
+  if (!targetUserId || targetUserId === authUser.id) {
+    return res.status(400).json({ error: 'Valid target user required' });
+  }
+  const targetUser = db.getUser(targetUserId);
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+  const result = db.toggleConnection(authUser.id, targetUserId);
+  if (result.connected) {
+    emitNotification({
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      recipientId: targetUserId,
+      actorId: authUser.id,
+      actorName: authUser.name || 'COOK Member',
+      actorAvatar: authUser.avatar || '',
+      type: 'follow',
+      title: 'New Connection on COOK',
+      message: `${authUser.name} connected with you!`,
+      targetId: authUser.id,
+      targetType: 'profile',
+      read: false,
+      createdAt: Date.now(),
+      timestamp: 'Just now',
+    });
+  }
+  res.json({ success: true, ...result });
+});
+
+// ==========================================
+// NOTIFICATIONS REST ENDPOINTS (Strictly Real Per-User)
+// ==========================================
+app.get('/api/notifications', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) {
+    return res.json({ notifications: [], unreadCount: 0 });
+  }
+  const notifications = db.getNotifications(authUser.id);
+  const unreadCount = notifications.filter(n => !n.read).length;
+  res.json({ notifications, unreadCount });
+});
+
+app.post('/api/notifications', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: 'Authentication required' });
+  const { recipientId, actorName, actorAvatar, type, title, message, targetId, targetType } = req.body;
+  if (!title || !message || !recipientId) {
+    return res.status(400).json({ error: 'recipientId, title, and message required' });
+  }
+  const newNotif = emitNotification({
+    id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    recipientId,
+    actorId: authUser.id,
+    actorName: actorName || authUser.name || 'COOK Member',
+    actorAvatar: actorAvatar || authUser.avatar || '',
+    type: type || 'system',
+    title,
+    message,
+    targetId: targetId || null,
+    targetType: targetType || null,
+    read: false,
+    createdAt: Date.now(),
+    timestamp: 'Just now',
+  });
+  res.json({ success: true, notification: newNotif });
+});
+
+app.post('/api/notifications/:id/read', (req, res) => {
+  const authUser = getAuthUser(req);
+  const success = db.markNotificationRead(req.params.id, authUser?.id);
+  res.json({ success });
+});
+
+app.post('/api/notifications/read-all', (req, res) => {
+  const authUser = getAuthUser(req);
+  const success = db.markAllNotificationsRead(authUser?.id);
+  res.json({ success });
+});
+
+app.delete('/api/notifications', (req, res) => {
+  const authUser = getAuthUser(req);
+  const success = db.clearNotifications(authUser?.id);
+  res.json({ success });
+});
+
+// ==========================================
+// REAL SERVER STATUS & LIVE PEOPLE COUNTER
+// ==========================================
+app.get('/api/server/stats', (req, res) => {
+  const stats = db.getPlatformStats();
+  res.json({
+    online: true,
+    server: 'COOK Node.js Production Engine',
+    port: 3000,
+    onlineUsersNow: userSockets.size,
+    ...stats,
+  });
+});
+
+app.get('/api/users', (req, res) => {
+  const authUser = getAuthUser(req);
+  const myBlocked: string[] = authUser?.privacySettings?.blockedUserIds || [];
+
+  const users = db.getAllUsers().map(u => {
+    const policy =
+      u.privacySettings?.allowDirectMessages === false
+        ? 'nobody'
+        : u.privacySettings?.chatInitiationPolicy || 'everyone';
+    const access = authUser && u.id !== authUser.id
+      ? db.canUserInitiateChat(authUser.id, u.id)
+      : { allowed: true, reason: undefined, policy, isConnected: false, isBlocked: false };
+
+    return {
+      id: u.id,
+      name: u.name,
+      username: u.username,
+      avatar: u.avatar,
+      headline: u.headline,
+      bio: u.bio,
+      role: u.role || u.primaryRole,
+      primaryRole: u.primaryRole || u.role,
+      location: u.location,
+      verified: Boolean(u.verified),
+      postsCount: u.postsCount || 0,
+      followersCount: u.followersCount || 0,
+      connectionsCount: u.connectionsCount || 0,
+      skills: u.skills || [],
+      interests: u.interests || [],
+      createdAt: u.createdAt,
+      isOnline: userSockets.has(u.id),
+      chatPrivacyPolicy: policy,
+      canInitiateChat: access.allowed,
+      chatBlockReason: access.reason,
+      isConnected: access.isConnected,
+      isBlockedByMe: myBlocked.includes(u.id),
+    };
+  });
+  res.json({ users, count: users.length });
+});
+
+// ==========================================
+// MODERATOR-ONLY ENDPOINTS (Strictly restricted to MODERATOR_EMAIL)
+// Invisible to regular users; 403 Forbidden for any other account.
+// ==========================================
+app.get('/api/moderator/overview', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser || !isModeratorUser(authUser)) {
+    return res.status(403).json({ error: 'Forbidden: Moderator authorization required.' });
+  }
+
+  const allUsers = db.getAllUsers().map((u) => ({
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    username: u.username,
+    avatar: u.avatar,
+    role: u.primaryRole || u.role,
+    headline: u.headline,
+    location: u.location,
+    authProvider: u.authProvider,
+    onboardingCompleted: Boolean(u.onboardingCompleted),
+    profileCompletionPercentage: computeCompletion(u),
+    postsCount: u.postsCount || 0,
+    connectionsCount: u.connectionsCount || 0,
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
+  }));
+
+  const allPosts = db.getPosts();
+  // Compute real-time trending tags from actual posts
+  const tagCounts: Record<string, number> = {};
+  const categoryCounts: Record<string, number> = {};
+  allPosts.forEach((p: any) => {
+    if (Array.isArray(p.tags)) {
+      p.tags.forEach((tag: string) => {
+        const clean = tag.startsWith('#') ? tag : `#${tag}`;
+        tagCounts[clean] = (tagCounts[clean] || 0) + 1;
+      });
+    }
+    if (p.category) {
+      categoryCounts[p.category] = (categoryCounts[p.category] || 0) + 1;
+    }
+  });
+
+  const trends = Object.entries(tagCounts)
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const categories = Object.entries(categoryCounts)
+    .map(([category, count]) => ({ category, count }))
+    .sort((a, b) => b.count - a.count);
+
+  res.json({
+    moderatorEmail: MODERATOR_EMAIL,
+    stats: db.getPlatformStats(),
+    loginEvents: db.getLoginEvents(),
+    users: allUsers,
+    posts: allPosts,
+    fundings: db.getFundings(),
+    trends,
+    categories,
+    messages: db.getMessagesForUser(),
+    settings: db.getModeratorSettings(),
+  });
+});
+
+app.put('/api/moderator/settings', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser || !isModeratorUser(authUser)) {
+    return res.status(403).json({ error: 'Forbidden: Moderator authorization required.' });
+  }
+  const { spreadsheetId, spreadsheetUrl, sheetName, whatsappPhone, whatsappWebhookUrl } = req.body || {};
+  const saved = db.saveModeratorSettings({
+    ...(spreadsheetId !== undefined ? { spreadsheetId: String(spreadsheetId).trim() } : {}),
+    ...(spreadsheetUrl !== undefined ? { spreadsheetUrl: String(spreadsheetUrl).trim() } : {}),
+    ...(sheetName !== undefined ? { sheetName: String(sheetName).trim() || 'Logins' } : {}),
+    ...(whatsappPhone !== undefined ? { whatsappPhone: String(whatsappPhone).trim() } : {}),
+    ...(whatsappWebhookUrl !== undefined ? { whatsappWebhookUrl: String(whatsappWebhookUrl).trim() } : {}),
+  });
+  res.json({ success: true, settings: saved });
+});
+
+app.post('/api/moderator/message', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser || !isModeratorUser(authUser)) {
+    return res.status(403).json({ error: 'Forbidden: Moderator authorization required.' });
+  }
+  const { recipientId, content } = req.body || {};
+  if (!recipientId || !content?.trim()) {
+    return res.status(400).json({ error: 'Recipient and message content are required.' });
+  }
+  const targetUser = db.getUser(recipientId);
+  if (!targetUser) {
+    return res.status(404).json({ error: 'Recipient user not found.' });
+  }
+
+  const newMsg = {
+    id: `msg-${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+    conversationId: `dm_${[authUser.id, recipientId].sort().join('_')}`,
+    senderId: authUser.id,
+    recipientId,
+    senderName: authUser.name || 'COOK Moderator',
+    senderAvatar: authUser.avatar || '',
+    content: content.trim(),
+    read: false,
+    createdAt: Date.now(),
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+  db.addMessage(newMsg);
+
+  sendWsToUser(authUser.id, 'chat:message', { message: { ...newMsg, isMe: true } });
+  sendWsToUser(recipientId, 'chat:message', { message: { ...newMsg, isMe: false } });
+
+  emitNotification({
+    id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    recipientId,
+    actorId: authUser.id,
+    actorName: authUser.name || 'COOK Team',
+    actorAvatar: authUser.avatar || '',
+    type: 'system',
+    title: 'Direct Message from COOK',
+    message: content.trim(),
+    targetId: authUser.id,
+    targetType: 'messages',
+    read: false,
+    createdAt: Date.now(),
+    timestamp: 'Just now',
+  });
+
+  res.json({ success: true, message: { ...newMsg, isMe: true } });
+});
+
+app.delete('/api/moderator/posts/:id', (req, res) => {
+  const authUser = getAuthUser(req);
+  if (!authUser || !isModeratorUser(authUser)) {
+    return res.status(403).json({ error: 'Forbidden: Moderator authorization required.' });
+  }
+  const success = db.deletePost(req.params.id);
+  posts = db.getPosts();
+  res.json({ success });
 });
 
 // AI Startup Mentor with Gemini
@@ -1525,12 +1893,156 @@ Provide an insightful, founder-ready answer with specific examples and tactical 
   }
 });
 
-// Setup Vite in Dev mode or static files in Prod
+// Setup Vite in Dev mode or static files in Prod + Real-Time WebSocket Server
 async function startServer() {
+  const server = http.createServer(app);
+
+  // Attach WebSocket server to the HTTP server on port 3000
+  const wss = new WebSocketServer({ server, path: '/ws' });
+
+  wss.on('connection', (ws, req) => {
+    try {
+      const reqUrl = new URL(req.url || '/ws', `http://${req.headers.host || 'localhost'}`);
+      const token = reqUrl.searchParams.get('token') || '';
+      const session = db.getSession(token);
+      if (!session) {
+        ws.close(4001, 'Unauthorized');
+        return;
+      }
+
+      const authUser = db.getUser(session.userId);
+      if (!authUser) {
+        ws.close(4001, 'User not found');
+        return;
+      }
+
+      const userId = authUser.id;
+      if (!userSockets.has(userId)) {
+        userSockets.set(userId, new Set());
+      }
+      userSockets.get(userId)!.add(ws);
+
+      // Send initial presence snapshot and broadcast online state
+      ws.send(
+        JSON.stringify({
+          event: 'presence:update',
+          payload: { onlineUserIds: Array.from(userSockets.keys()) },
+        })
+      );
+      broadcastOnlinePresence();
+
+      ws.on('message', (raw) => {
+        try {
+          const parsed = JSON.parse(raw.toString());
+          const { event, payload } = parsed || {};
+
+          if (event === 'chat:typing') {
+            const { recipientId, conversationId, isTyping } = payload || {};
+            if (recipientId && conversationId) {
+              sendWsToUser(recipientId, 'chat:typing', {
+                conversationId,
+                senderId: userId,
+                isTyping: Boolean(isTyping),
+              });
+            }
+          } else if (event === 'chat:read') {
+            const { conversationId, partnerId } = payload || {};
+            if (conversationId) {
+              const updatedCount = db.markConversationRead(conversationId, userId);
+              if (updatedCount > 0 && partnerId) {
+                sendWsToUser(partnerId, 'chat:read', {
+                  conversationId,
+                  readerId: userId,
+                  readAt: Date.now(),
+                });
+              }
+            }
+          } else if (event === 'chat:send') {
+            const { content, recipientId, conversationId, mediaUrl, isVoiceNote, clientTempId } = payload || {};
+            if (!recipientId || (!content && !mediaUrl)) return;
+
+            const access = db.canUserInitiateChat(userId, recipientId);
+            if (!access.allowed) {
+              ws.send(
+                JSON.stringify({
+                  event: 'chat:error',
+                  payload: {
+                    clientTempId,
+                    error: access.reason || 'Messaging restricted by privacy settings.',
+                  },
+                })
+              );
+              return;
+            }
+
+            const sender = db.getUser(userId) || authUser;
+            const resolvedConvId =
+              conversationId || `dm_${[userId, recipientId].sort().join('_')}`;
+            const newMsg = {
+              id: `msg-${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+              conversationId: resolvedConvId,
+              senderId: userId,
+              recipientId,
+              senderName: sender.name || 'COOK Member',
+              senderAvatar: sender.avatar || '',
+              content: content || (isVoiceNote ? '🎙️ Voice note' : 'Sent an attachment'),
+              mediaUrl,
+              isVoiceNote: Boolean(isVoiceNote),
+              read: false,
+              createdAt: Date.now(),
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            };
+            db.addMessage(newMsg);
+
+            sendWsToUser(userId, 'chat:message', {
+              clientTempId,
+              message: { ...newMsg, isMe: true },
+            });
+            if (recipientId !== userId) {
+              sendWsToUser(recipientId, 'chat:message', {
+                message: { ...newMsg, isMe: false },
+              });
+              emitNotification({
+                id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                recipientId,
+                actorId: userId,
+                actorName: sender.name || 'COOK Member',
+                actorAvatar: sender.avatar || '',
+                type: 'comment',
+                title: 'New Direct Message',
+                message: `${sender.name} sent you a message: "${newMsg.content.substring(0, 60)}"`,
+                targetId: userId,
+                targetType: 'messages',
+                read: false,
+                createdAt: Date.now(),
+                timestamp: 'Just now',
+              });
+            }
+          }
+        } catch (msgErr) {
+          // ignore malformed WS frames
+        }
+      });
+
+      ws.on('close', () => {
+        const set = userSockets.get(userId);
+        if (set) {
+          set.delete(ws);
+          if (set.size === 0) {
+            userSockets.delete(userId);
+          }
+        }
+        broadcastOnlinePresence();
+      });
+    } catch (connErr) {
+      ws.close(1011, 'Internal server error');
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1541,8 +2053,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
-    console.log(`COOK Server cooking on http://0.0.0.0:${PORT}`);
+  server.listen(PORT, () => {
+    console.log(`COOK Server + WebSockets cooking on http://0.0.0.0:${PORT}`);
   });
 }
 

@@ -225,19 +225,31 @@ export const SinglePhotoUpload: React.FC<SinglePhotoUploadProps> = ({
 
 interface GalleryPhotoUploadProps {
   photos: RecordPhoto[];
-  onChange: (photos: RecordPhoto[]) => void;
+  onChange?: (photos: RecordPhoto[]) => void;
+  onPhotosChanged?: (photos: RecordPhoto[]) => void;
+  label?: string;
   title?: string;
   description?: string;
+  helpText?: string;
   maxPhotos?: number;
 }
 
 export const GalleryPhotoUpload: React.FC<GalleryPhotoUploadProps> = ({
   photos = [],
   onChange,
+  onPhotosChanged,
+  label,
   title = 'Work & Project Photos',
   description = 'Add workplace photos, presentations, work samples, or awards.',
+  helpText,
   maxPhotos = 12,
 }) => {
+  const triggerChange = (updated: RecordPhoto[]) => {
+    if (onChange) onChange(updated);
+    if (onPhotosChanged) onPhotosChanged(updated);
+  };
+  const displayTitle = label || title;
+  const displayDesc = helpText || description;
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -291,20 +303,20 @@ export const GalleryPhotoUpload: React.FC<GalleryPhotoUploadProps> = ({
 
     setIsUploading(false);
     if (uploadedList.length > 0) {
-      onChange([...photos, ...uploadedList]);
+      triggerChange([...photos, ...uploadedList]);
     }
   };
 
   const handleRemovePhoto = (id: string) => {
-    onChange(photos.filter(p => p.id !== id));
+    triggerChange(photos.filter(p => p.id !== id));
   };
 
   const handleUpdateCaption = (id: string, caption: string) => {
-    onChange(photos.map(p => p.id === id ? { ...p, caption } : p));
+    triggerChange(photos.map(p => p.id === id ? { ...p, caption } : p));
   };
 
   const handleToggleVisibility = (id: string) => {
-    onChange(photos.map(p => {
+    triggerChange(photos.map(p => {
       if (p.id === id) {
         const nextVis: VisibilityLevel =
           p.visibility === 'public'
@@ -324,10 +336,10 @@ export const GalleryPhotoUpload: React.FC<GalleryPhotoUploadProps> = ({
         <div>
           <h4 className="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
             <ImageIcon className="w-4 h-4 text-indigo-400" />
-            <span>{title}</span>
+            <span>{displayTitle}</span>
             <span className="text-[10px] text-gray-400">({photos.length}/{maxPhotos})</span>
           </h4>
-          <p className="text-[11px] text-gray-400">{description}</p>
+          <p className="text-[11px] text-gray-400">{displayDesc}</p>
         </div>
 
         <button

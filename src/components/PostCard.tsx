@@ -18,38 +18,60 @@ import {
   Send,
   ExternalLink,
   Flame,
+  BarChart2,
+  Eye,
+  CheckCircle2,
 } from 'lucide-react';
-import { Post, Comment } from '../types';
+import { Post } from '../types';
 import { ShareItem } from './ShareModal';
+import { VideoPlayer } from './VideoPlayer';
+import { formatDuration } from '../utils/mediaUpload';
 
 interface PostCardProps {
   post: Post;
+  currentUserId?: string;
   onLike: (postId: string) => void;
   onSave: (postId: string) => void;
   onRepost: (postId: string) => void;
   onShare: (item: ShareItem) => void;
   onDelete?: (postId: string) => void;
   onAddComment: (postId: string, text: string) => void;
+  onVideoView?: (postId: string, completed?: boolean) => void;
   onFilterTag?: (tag: string) => void;
   onViewStartup?: (startupName: string) => void;
 }
 
 export const PostCard: React.FC<PostCardProps> = ({
   post,
+  currentUserId,
   onLike,
   onSave,
   onRepost,
   onShare,
   onDelete,
   onAddComment,
+  onVideoView,
   onFilterTag,
   onViewStartup,
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [showComments, setShowComments] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
   const [commentInput, setCommentInput] = useState('');
   const [selectedPollOption, setSelectedPollOption] = useState<number | undefined>(post.poll?.userVote);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+
+  const isVideoPost = post.type === 'video' || Boolean(post.media?.some(m => m.type === 'video'));
+  const viewsCount = post.viewsCount || 0;
+  const watchCompletions = post.watchCompletions || 0;
+  const totalInteractions =
+    (post.likes || 0) +
+    (post.comments?.length || 0) +
+    (post.reposts || 0) +
+    (post.saves || 0) +
+    (post.shareCount || 0);
+  const engagementRate =
+    viewsCount > 0 ? ((totalInteractions / viewsCount) * 100).toFixed(1) : '0.0';
 
   const handleShareClick = () => {
     onShare({
@@ -72,9 +94,9 @@ export const PostCard: React.FC<PostCardProps> = ({
   return (
     <article className="bg-[#13192B] border border-[#1F293D] rounded-2xl p-4 sm:p-5 shadow-lg relative transition-all hover:border-gray-700/80">
       {/* Post Header */}
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-3">
-          <div className="relative">
+      <div className="flex items-start justify-between gap-2 sm:gap-3 mb-3">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <div className="relative flex-shrink-0">
             <img
               src={post.author.avatar}
               alt={post.author.name}
@@ -84,16 +106,16 @@ export const PostCard: React.FC<PostCardProps> = ({
               <ShieldCheck className="w-4 h-4 text-blue-400 absolute -bottom-0.5 -right-0.5 bg-[#13192B] rounded-full" />
             )}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-bold text-white text-sm sm:text-base hover:text-indigo-300 cursor-pointer transition">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <h3 className="font-bold text-white text-sm sm:text-base hover:text-indigo-300 cursor-pointer transition truncate">
                 {post.author.name}
               </h3>
-              <span className="text-xs text-gray-500">•</span>
-              <span className="text-xs text-gray-400">{post.timestamp}</span>
-              <Globe className="w-3 h-3 text-gray-500" />
+              <span className="text-xs text-gray-500 flex-shrink-0">•</span>
+              <span className="text-xs text-gray-400 whitespace-nowrap flex-shrink-0">{post.timestamp}</span>
+              <Globe className="w-3 h-3 text-gray-500 flex-shrink-0 hidden sm:inline" />
             </div>
-            <p className="text-xs text-gray-400 line-clamp-1">{post.author.role}</p>
+            <p className="text-xs text-gray-400 truncate">{post.author.role}</p>
           </div>
         </div>
 
@@ -128,7 +150,7 @@ export const PostCard: React.FC<PostCardProps> = ({
                 <Copy className="w-3.5 h-3.5 text-amber-400" />
                 <span>Copy Text</span>
               </button>
-              {onDelete && post.author.id === 'me' && (
+              {onDelete && currentUserId && post.author.id === currentUserId && (
                 <button
                   onClick={() => {
                     onDelete(post.id);
@@ -177,22 +199,22 @@ export const PostCard: React.FC<PostCardProps> = ({
 
       {/* Startup Pitch Details Card if this is a startup post */}
       {post.startupDetails && (
-        <div className="mb-4 p-4 rounded-xl bg-[#0B0F19] border border-indigo-500/30 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-[#FF5E1E] flex items-center justify-center font-bold text-white text-xs">
+        <div className="mb-4 p-3.5 sm:p-4 rounded-xl bg-[#0B0F19] border border-indigo-500/30 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-[#FF5E1E] flex items-center justify-center font-bold text-white text-xs flex-shrink-0">
                 {post.startupDetails.name.slice(0, 2).toUpperCase()}
               </div>
-              <div>
-                <h4 className="font-bold text-white text-sm">{post.startupDetails.name}</h4>
-                <p className="text-[11px] text-gray-400">{post.startupDetails.tagline}</p>
+              <div className="min-w-0">
+                <h4 className="font-bold text-white text-sm truncate">{post.startupDetails.name}</h4>
+                <p className="text-[11px] text-gray-400 truncate">{post.startupDetails.tagline}</p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
                 {post.startupDetails.stage}
               </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 whitespace-nowrap">
                 {post.startupDetails.industry}
               </span>
             </div>
@@ -275,12 +297,13 @@ export const PostCard: React.FC<PostCardProps> = ({
       {post.media && post.media.length > 0 && (
         <div className="mb-4 rounded-2xl overflow-hidden border border-gray-800 bg-[#0B0F19]">
           {post.media[0].type === 'video' ? (
-            <video
+            <VideoPlayer
               src={post.media[0].url}
-              controls
-              playsInline
-              className="w-full max-h-[460px] object-cover bg-black rounded-2xl"
-              preload="metadata"
+              caption={post.media[0].caption || post.title}
+              viewsCount={viewsCount}
+              initialDurationSeconds={post.videoDurationSeconds}
+              onFirstPlay={() => onVideoView?.(post.id, false)}
+              onWatchComplete={() => onVideoView?.(post.id, true)}
             />
           ) : (
             <div
@@ -377,19 +400,27 @@ export const PostCard: React.FC<PostCardProps> = ({
       )}
 
       {/* Engagement Counts Bar */}
-      <div className="flex items-center justify-between text-xs text-gray-400 py-2 border-y border-[#1F293D]/70 mb-2">
-        <div className="flex items-center gap-1.5">
-          <div className="flex items-center -space-x-1">
-            <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-500 flex items-center justify-center text-[10px]">
-              ❤️
-            </span>
-            <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-500 flex items-center justify-center text-[10px]">
-              🔥
-            </span>
-          </div>
-          <span>{post.likes}</span>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400 py-2 border-y border-[#1F293D]/70 mb-2">
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <div className="flex items-center -space-x-1">
+              <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-500 flex items-center justify-center text-[10px]">
+                ❤️
+              </span>
+              <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-500 flex items-center justify-center text-[10px]">
+                🔥
+              </span>
+            </div>
+            <span>{post.likes}</span>
+          </div>
+          {isVideoPost && (
+            <span className="flex items-center gap-1 text-gray-300 font-medium">
+              <Eye className="w-3.5 h-3.5 text-[#FF5E1E]" />
+              <span>{viewsCount} views</span>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button
             onClick={() => setShowComments(!showComments)}
             className="hover:text-white transition"
@@ -400,61 +431,123 @@ export const PostCard: React.FC<PostCardProps> = ({
           <span>{post.reposts} reposts</span>
           <span>•</span>
           <span>{post.shareCount || 0} shares</span>
+          {isVideoPost && (
+            <>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => setShowMetrics(!showMetrics)}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[11px] font-semibold transition ${
+                  showMetrics
+                    ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
+                    : 'bg-[#0B0F19] border-gray-800 text-gray-300 hover:text-white'
+                }`}
+              >
+                <BarChart2 className="w-3 h-3 text-indigo-400" />
+                <span>Metrics</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
+      {/* Expandable Real Video Engagement Metrics Card */}
+      {isVideoPost && showMetrics && (
+        <div className="mb-3 p-3.5 rounded-xl bg-[#0B0F19] border border-indigo-500/30 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-white flex items-center gap-1.5">
+              <BarChart2 className="w-3.5 h-3.5 text-[#FF5E1E]" />
+              <span>Video Engagement Analytics (Real Data)</span>
+            </span>
+            {post.videoDurationSeconds ? (
+              <span className="text-[11px] font-mono text-gray-400">
+                Duration {formatDuration(post.videoDurationSeconds)}
+              </span>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+            <div className="p-2 rounded-lg bg-[#13192B] border border-gray-800">
+              <span className="text-[10px] text-gray-400 block">Total Views</span>
+              <span className="text-sm font-extrabold text-white">{viewsCount.toLocaleString()}</span>
+            </div>
+            <div className="p-2 rounded-lg bg-[#13192B] border border-gray-800">
+              <span className="text-[10px] text-gray-400 block">Engagement Rate</span>
+              <span className="text-sm font-extrabold text-emerald-400">{engagementRate}%</span>
+            </div>
+            <div className="p-2 rounded-lg bg-[#13192B] border border-gray-800">
+              <span className="text-[10px] text-gray-400 block">Full Watches</span>
+              <span className="text-sm font-extrabold text-indigo-300 flex items-center justify-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>{watchCompletions}</span>
+              </span>
+            </div>
+            <div className="p-2 rounded-lg bg-[#13192B] border border-gray-800">
+              <span className="text-[10px] text-gray-400 block">Saves & Shares</span>
+              <span className="text-sm font-extrabold text-[#FF5E1E]">
+                {(post.saves || 0) + (post.shareCount || 0)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Action Buttons Row */}
-      <div className="flex items-center justify-between text-xs font-semibold text-gray-400 pt-1">
+      <div className="flex items-center justify-between gap-1 text-xs font-semibold text-gray-400 pt-1">
         <button
           onClick={() => onLike(post.id)}
-          className={`flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg transition ${
+          aria-label="Like"
+          className={`min-h-[38px] flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg transition cursor-pointer ${
             post.likedByMe
               ? 'text-rose-500 bg-rose-500/10'
               : 'hover:text-white hover:bg-white/5'
           }`}
         >
-          <Heart className={`w-4 h-4 ${post.likedByMe ? 'fill-rose-500' : ''}`} />
-          <span>Like</span>
+          <Heart className={`w-4 h-4 flex-shrink-0 ${post.likedByMe ? 'fill-rose-500' : ''}`} />
+          <span className="hidden min-[420px]:inline">Like</span>
         </button>
 
         <button
           onClick={() => setShowComments(!showComments)}
-          className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg hover:text-white hover:bg-white/5 transition"
+          aria-label="Comment"
+          className="min-h-[38px] flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg hover:text-white hover:bg-white/5 transition cursor-pointer"
         >
-          <MessageSquare className="w-4 h-4" />
-          <span>Comment</span>
+          <MessageSquare className="w-4 h-4 flex-shrink-0" />
+          <span className="hidden min-[420px]:inline">Comment</span>
         </button>
 
         <button
           onClick={() => onRepost(post.id)}
-          className={`flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg transition ${
+          aria-label="Repost"
+          className={`min-h-[38px] flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg transition cursor-pointer ${
             post.repostedByMe
               ? 'text-emerald-400 bg-emerald-500/10'
               : 'hover:text-white hover:bg-white/5'
           }`}
         >
-          <Repeat2 className="w-4 h-4" />
-          <span>Repost</span>
+          <Repeat2 className="w-4 h-4 flex-shrink-0" />
+          <span className="hidden min-[420px]:inline">Repost</span>
         </button>
 
         <button
           onClick={() => onSave(post.id)}
-          className={`flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg transition ${
+          aria-label="Save"
+          className={`min-h-[38px] flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg transition cursor-pointer ${
             post.savedByMe
               ? 'text-indigo-400 bg-indigo-500/10'
               : 'hover:text-white hover:bg-white/5'
           }`}
         >
-          <Bookmark className={`w-4 h-4 ${post.savedByMe ? 'fill-indigo-400' : ''}`} />
-          <span>Save</span>
+          <Bookmark className={`w-4 h-4 flex-shrink-0 ${post.savedByMe ? 'fill-indigo-400' : ''}`} />
+          <span className="hidden min-[420px]:inline">Save</span>
         </button>
 
         <button
           onClick={handleShareClick}
-          className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg text-[#FF5E1E] hover:bg-[#FF5E1E]/10 transition"
+          aria-label="Share"
+          className="min-h-[38px] flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg text-[#FF5E1E] hover:bg-[#FF5E1E]/10 transition cursor-pointer"
         >
-          <Share2 className="w-4 h-4" />
-          <span>Share</span>
+          <Share2 className="w-4 h-4 flex-shrink-0" />
+          <span className="hidden min-[420px]:inline">Share</span>
         </button>
       </div>
 

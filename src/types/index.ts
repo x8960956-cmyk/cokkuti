@@ -106,7 +106,9 @@ export interface ProjectItem {
   role: string;
   link?: string;
   sourceUrl?: string;
+  image?: string;
   imageUrl?: string;
+  photos?: RecordPhoto[];
   gallery?: RecordPhoto[];
   tags?: string[];
   date?: string;
@@ -131,6 +133,8 @@ export interface ProfilePrivacySettings {
   showEducationGrades: boolean;
   showFundingRequests: boolean;
   allowDirectMessages: boolean;
+  chatInitiationPolicy?: 'everyone' | 'connections_only' | 'nobody';
+  blockedUserIds?: string[];
 }
 
 export interface User {
@@ -139,6 +143,8 @@ export interface User {
   firstName?: string;
   lastName?: string;
   username: string;
+  email?: string;
+  authProvider?: string;
   avatar: string;
   coverImage?: string;
   role: UserRole;
@@ -163,6 +169,10 @@ export interface User {
   projects?: ProjectItem[];
   certifications?: CertificationItem[];
   languages?: string[];
+  availability?: string;
+  yearsOfExperience?: number | string;
+  githubUrl?: string;
+  collaborationGoals?: string[];
   socialLinks?: {
     github?: string;
     linkedin?: string;
@@ -177,6 +187,8 @@ export interface User {
   profileCompletionPercentage?: number;
   startupStage?: string;
   lookingForCoFounder?: boolean;
+  onboardingCompleted?: boolean;
+  onboardingStep?: number;
 }
 
 export interface Post {
@@ -206,7 +218,11 @@ export interface Post {
   repostedByMe?: boolean;
   saves: number;
   savedByMe?: boolean;
+  sharesCount?: number;
   shareCount: number;
+  viewsCount?: number;
+  watchCompletions?: number;
+  videoDurationSeconds?: number;
   timestamp: string;
   category: string;
   startupDetails?: {
@@ -271,35 +287,19 @@ export interface FundingRequest {
   tags: string[];
 }
 
-export interface Clip {
-  id: string;
-  creator: {
-    name: string;
-    username: string;
-    avatar: string;
-    role: string;
-    verified: boolean;
-  };
-  title: string;
-  description: string;
-  videoUrl: string;
-  likes: number;
-  likedByMe?: boolean;
-  commentsCount: number;
-  sharesCount: number;
-  views: string;
-  tags: string[];
-}
-
 export interface Message {
   id: string;
   conversationId: string;
   senderId: string;
   senderName: string;
   senderAvatar: string;
+  recipientId?: string;
   content: string;
   mediaUrl?: string;
   isVoiceNote?: boolean;
+  read?: boolean;
+  readAt?: number;
+  createdAt?: number;
   timestamp: string;
   isMe: boolean;
 }
@@ -392,4 +392,22 @@ export interface StartupEvent {
   attending?: boolean;
   description: string;
   prizes?: string;
+}
+
+export type NotificationType = 'like' | 'comment' | 'funding_interest' | 'follow' | 'mention' | 'system';
+
+export interface NotificationItem {
+  id: string;
+  recipientId?: string;
+  actorId?: string;
+  actorName: string;
+  actorAvatar: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  targetId?: string;
+  targetType?: 'post' | 'funding' | 'profile' | 'messages' | 'moderator';
+  read: boolean;
+  createdAt: number;
+  timestamp: string;
 }

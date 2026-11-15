@@ -178,11 +178,11 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
     user.socialLinkItems && user.socialLinkItems.length > 0
       ? user.socialLinkItems
       : [
-          { id: 'soc-1', platform: 'linkedin' as SocialPlatform, platformName: 'LinkedIn', url: user.socialLinks?.linkedin || 'https://linkedin.com/in/arjunmehta-cook', visibility: 'public' as VisibilityLevel, displayOrder: 1 },
-          { id: 'soc-2', platform: 'github' as SocialPlatform, platformName: 'GitHub', url: user.socialLinks?.github || 'https://github.com/arjunmehta', visibility: 'public' as VisibilityLevel, displayOrder: 2 },
-          { id: 'soc-3', platform: 'twitter' as SocialPlatform, platformName: 'X (Twitter)', url: user.socialLinks?.twitter || 'https://x.com/arjun_builds', visibility: 'public' as VisibilityLevel, displayOrder: 3 },
-          { id: 'soc-4', platform: 'website' as SocialPlatform, platformName: 'Portfolio Website', url: user.socialLinks?.website || user.website || 'https://arjun.build', visibility: 'public' as VisibilityLevel, displayOrder: 4 },
-        ].filter(s => s.url)
+          { id: 'soc-1', platform: 'linkedin' as SocialPlatform, platformName: 'LinkedIn', url: user.socialLinks?.linkedin || '', visibility: 'public' as VisibilityLevel, displayOrder: 1 },
+          { id: 'soc-2', platform: 'github' as SocialPlatform, platformName: 'GitHub', url: user.socialLinks?.github || user.githubUrl || '', visibility: 'public' as VisibilityLevel, displayOrder: 2 },
+          { id: 'soc-3', platform: 'twitter' as SocialPlatform, platformName: 'X (Twitter)', url: user.socialLinks?.twitter || '', visibility: 'public' as VisibilityLevel, displayOrder: 3 },
+          { id: 'soc-4', platform: 'website' as SocialPlatform, platformName: 'Portfolio Website', url: user.socialLinks?.website || user.website || '', visibility: 'public' as VisibilityLevel, displayOrder: 4 },
+        ].filter(s => Boolean(s.url))
   );
 
   const [newSocialPlatform, setNewSocialPlatform] = useState<SocialPlatform>('linkedin');
@@ -190,16 +190,28 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
   const [newSocialCustomName, setNewSocialCustomName] = useState('');
   const [newSocialVisibility, setNewSocialVisibility] = useState<VisibilityLevel>('public');
 
-  // Privacy settings state
-  const [privacySettings, setPrivacySettings] = useState<ProfilePrivacySettings>(
-    user.privacySettings || {
-      profileVisibility: 'public',
-      showEmail: false,
-      showEducationGrades: true,
-      showFundingRequests: true,
-      allowDirectMessages: true,
-    }
+  // Additional Permanent Profile Fields
+  const [yearsOfExperience, setYearsOfExperience] = useState<string>(
+    user.yearsOfExperience !== undefined ? String(user.yearsOfExperience) : '3'
   );
+  const [githubUrl, setGithubUrl] = useState<string>(user.githubUrl || user.socialLinks?.github || '');
+  const [collaborationGoals, setCollaborationGoals] = useState<string[]>(
+    user.collaborationGoals || ['Find technical co-founder', 'Build AI MVP', 'Raise Pre-Seed']
+  );
+
+  // Privacy settings state
+  const [privacySettings, setPrivacySettings] = useState<ProfilePrivacySettings>({
+    profileVisibility: user.privacySettings?.profileVisibility || 'public',
+    showEmail: Boolean(user.privacySettings?.showEmail),
+    showEducationGrades: user.privacySettings?.showEducationGrades !== false,
+    showFundingRequests: user.privacySettings?.showFundingRequests !== false,
+    allowDirectMessages: user.privacySettings?.allowDirectMessages !== false,
+    chatInitiationPolicy:
+      user.privacySettings?.allowDirectMessages === false
+        ? 'nobody'
+        : user.privacySettings?.chatInitiationPolicy || 'everyone',
+    blockedUserIds: user.privacySettings?.blockedUserIds || [],
+  });
 
   // Photo Crop Modal states
   const [photoCropOpen, setPhotoCropOpen] = useState(false);
@@ -208,6 +220,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
   // Save feedback state
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Suggested roles library
   const suggestedRoles = [
@@ -533,7 +546,11 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
 
   // Master Save Handler
   const handleMasterSave = async () => {
+    if (isSaving) return;
     setIsSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+
     const primaryRole = customRoles.find((r) => r.isPrimary)?.name || customRoles[0]?.name || 'Founder';
 
     const updatedUserPayload: Partial<User> = {
@@ -553,13 +570,20 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
       role: primaryRole,
       primaryRole,
       customRoles,
+      yearsOfExperience,
+      githubUrl: githubUrl.trim() || socialLinks.github,
+      collaborationGoals,
       skills: skillItems.map((s) => s.name),
       skillItems,
       experience: experiences,
       education: educations,
       projects,
       certifications,
-      socialLinks,
+      socialLinks: {
+        ...socialLinks,
+        github: githubUrl.trim() || socialLinks.github,
+        website: website.trim() || socialLinks.website,
+      },
       socialLinkItems,
       privacySettings,
     };
@@ -567,9 +591,11 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
     try {
       await onSave(updatedUserPayload);
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 2500);
-    } catch (err) {
-      console.error(err);
+      setSaveError(null);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err: any) {
+      console.error('Failed to save profile:', err);
+      setSaveError(err.message || 'Failed to save changes. Your unsaved inputs are preserved.');
     } finally {
       setIsSaving(false);
     }
@@ -661,6 +687,22 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
           </button>
         </div>
       </div>
+
+      {saveError && (
+        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 p-3.5 rounded-2xl text-xs flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+            <span>{saveError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            className="text-white hover:underline text-[11px] font-bold px-2 py-1 rounded-lg bg-rose-500/20"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Layout Split: Desktop Left Nav, Mobile Horizontal Scroller */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
@@ -777,7 +819,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       className="w-full pl-8 pr-3.5 py-2.5 bg-[#0B0F19] border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500"
-                      placeholder="arjun_builds"
+                      placeholder="your_username"
                     />
                   </div>
                 </div>
@@ -794,7 +836,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                   value={headline}
                   onChange={(e) => setHeadline(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-[#0B0F19] border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500"
-                  placeholder="e.g. Founder & CEO @ TechNova • AI Systems Architect • Building in Public"
+                  placeholder="e.g. Founder & Product Builder • Full-Stack Engineer"
                 />
               </div>
 
@@ -1206,7 +1248,7 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                         required
                         value={expCompany}
                         onChange={(e) => setExpCompany(e.target.value)}
-                        placeholder="e.g. TechNova Labs"
+                        placeholder="e.g. Acme Labs"
                         className="w-full px-3 py-2 bg-[#13192B] border border-gray-800 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
                       />
                     </div>
@@ -2152,19 +2194,27 @@ export const EditProfileView: React.FC<EditProfileViewProps> = ({
                   />
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-[#0B0F19] border border-gray-800 flex items-center justify-between">
+                <div className="p-3.5 rounded-xl bg-[#0B0F19] border border-gray-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <span className="font-bold text-white text-xs block">Allow Direct Messaging</span>
-                    <span className="text-[11px] text-gray-400">Let other founders and investors message you</span>
+                    <span className="font-bold text-white text-xs block">Who Can Start Direct Chats With You</span>
+                    <span className="text-[11px] text-gray-400">Control privacy for new 1-on-1 conversations on COOK</span>
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={privacySettings.allowDirectMessages}
-                    onChange={(e) =>
-                      setPrivacySettings({ ...privacySettings, allowDirectMessages: e.target.checked })
-                    }
-                    className="rounded text-indigo-500 focus:ring-0"
-                  />
+                  <select
+                    value={privacySettings.chatInitiationPolicy || (privacySettings.allowDirectMessages ? 'everyone' : 'nobody')}
+                    onChange={(e) => {
+                      const policy = e.target.value as 'everyone' | 'connections_only' | 'nobody';
+                      setPrivacySettings({
+                        ...privacySettings,
+                        chatInitiationPolicy: policy,
+                        allowDirectMessages: policy !== 'nobody',
+                      });
+                    }}
+                    className="px-3 py-1.5 bg-[#13192B] border border-gray-700 rounded-xl text-xs text-white focus:outline-none"
+                  >
+                    <option value="everyone">Everyone on COOK</option>
+                    <option value="connections_only">Connections Only</option>
+                    <option value="nobody">Nobody (Disable New Chats)</option>
+                  </select>
                 </div>
               </div>
             </div>

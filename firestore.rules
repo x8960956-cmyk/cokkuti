@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // User Profiles: public read, owner write
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Home feed posts, pitches, updates
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.resource.data.author.id == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.author.id == request.auth.uid;
+    }
+
+    // Private user notifications or activity
+    match /notifications/{notificationId} {
+      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null;
+    }
+  }
+}

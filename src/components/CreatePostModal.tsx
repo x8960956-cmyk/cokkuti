@@ -1,11 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
   FileText,
   Image as ImageIcon,
   Video,
   BarChart2,
-  DollarSign,
   Plus,
   Trash2,
   Send,
@@ -13,11 +12,9 @@ import {
   Upload,
   Film,
   Camera,
-  Check,
-  Link,
-  Play,
+  Loader2,
 } from 'lucide-react';
-import { currentUser } from '../data/mockData';
+import { uploadMediaFile, extractVideoDuration, formatDuration } from '../utils/mediaUpload';
 
 interface CreatePostModalProps {
   isOpen: boolean;
@@ -29,6 +26,7 @@ interface CreatePostModalProps {
     tags: string[];
     media?: { type: 'image' | 'video'; url: string; caption?: string }[];
     poll?: { question: string; options: { text: string; votes: number }[]; totalVotes: number };
+    videoDurationSeconds?: number;
   }) => void;
   defaultType?: string;
 }
@@ -43,13 +41,23 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [tagInput, setTagInput] = useState('#BuildingInPublic, #Startups');
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setPostType(defaultType || 'post');
+      setUploadError(null);
+    }
+  }, [isOpen, defaultType]);
   
-  // Media states: local uploaded files or URLs
+  // Media states: persisted uploaded files or URLs
   const [mediaList, setMediaList] = useState<{
     type: 'image' | 'video';
     url: string;
     name: string;
     size?: string;
+    durationSeconds?: number;
   }[]>([]);
 
   const [useUrlInput, setUseUrlInput] = useState(false);
@@ -64,52 +72,64 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
 
   if (!isOpen) return null;
 
-  // File handler for images from computer
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Upload images permanently to server /uploads storage
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    setUploadError(null);
 
-    Array.from(files).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
-          setMediaList(prev => [
-            ...prev,
-            {
-              type: 'image',
-              url: event.target!.result as string,
-              name: file.name,
-              size: `${fileSizeMB} MB`,
-            },
-          ]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  // File handler for videos from computer
-  const handleVideoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    const file = files[0];
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (event.target?.result) {
+    for (const file of Array.from(files)) {
+      try {
+        setUploadProgress(5);
+        const uploaded = await uploadMediaFile(file, (pct) => setUploadProgress(pct));
         const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
-        setMediaList([
+        setMediaList(prev => [
+          ...prev,
           {
-            type: 'video',
-            url: event.target!.result as string,
+            type: 'image',
+            url: uploaded.url,
             name: file.name,
             size: `${fileSizeMB} MB`,
           },
         ]);
+      } catch (err: any) {
+        setUploadError(err?.message || 'Failed to upload image');
+      } finally {
+        setUploadProgress(null);
       }
-    };
-    reader.readAsDataURL(file);
+    }
+    e.target.value = '';
+  };
+
+  // Upload video permanently to server /uploads storage with duration detection
+  const handleVideoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError(null);
+
+    try {
+      setUploadProgress(5);
+      const [durationSeconds, uploaded] = await Promise.all([
+        extractVideoDuration(file),
+        uploadMediaFile(file, (pct) => setUploadProgress(pct)),
+      ]);
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
+      setMediaList([
+        {
+          type: 'video',
+          url: uploaded.url,
+          name: file.name,
+          size: `${fileSizeMB} MB`,
+          durationSeconds,
+        },
+      ]);
+      setPostType('video');
+    } catch (err: any) {
+      setUploadError(err?.message || 'Failed to upload video');
+    } finally {
+      setUploadProgress(null);
+    }
+    e.target.value = '';
   };
 
   const handleAddManualUrl = () => {
@@ -179,22 +199,27 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
       };
     }
 
+    const videoMedia = mediaList.find(m => m.type === 'video');
     const calculatedType =
       postType === 'poll'
         ? 'poll'
-        : mediaList.some(m => m.type === 'video') || postType === 'video'
+        : videoMedia || postType === 'video'
         ? 'video'
         : 'post';
 
     onSubmit({
       type: calculatedType as any,
       title: title.trim() || undefined,
-      content: content.trim(),
+      content: content.trim() || title.trim() || 'Shared a video on COOK',
       tags: parsedTags.length > 0 ? parsedTags : ['#COOK', '#Startups'],
       media,
       poll,
+      videoDurationSeconds: videoMedia?.durationSeconds,
     });
 
+    setTitle('');
+    setContent('');
+    setMediaList([]);
     onClose();
   };
 
@@ -263,16 +288,23 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
             ))}
           </div>
 
-          {/* Optional Title */}
+          {/* Title */}
           <div>
             <label className="block text-xs font-semibold text-gray-400 mb-1">
-              Title / Hook (Optional)
+              {postType === 'video' || mediaList.some(m => m.type === 'video')
+                ? 'Video Title *'
+                : 'Title / Hook (Optional)'}
             </label>
             <input
               type="text"
+              required={postType === 'video' || mediaList.some(m => m.type === 'video')}
               value={title}
               onChange={e => setTitle(e.target.value)}
-              placeholder="e.g. Just launched our AI MVP on COOK! 🚀"
+              placeholder={
+                postType === 'video'
+                  ? 'e.g. Live Product Walkthrough: How our MVP works'
+                  : 'e.g. Just launched our AI MVP on COOK!'
+              }
               className="w-full px-3.5 py-2.5 text-xs sm:text-sm bg-[#0B0F19] border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5E1E]"
             />
           </div>
@@ -280,14 +312,20 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
           {/* Content Body */}
           <div>
             <label className="block text-xs font-semibold text-gray-400 mb-1">
-              Your Story, Question, or Idea *
+              {postType === 'video' || mediaList.some(m => m.type === 'video')
+                ? 'Video Description & Context *'
+                : 'Your Story, Question, or Idea *'}
             </label>
             <textarea
               rows={4}
-              required
+              required={mediaList.length === 0}
               value={content}
               onChange={e => setContent(e.target.value)}
-              placeholder="Share what you're building, insights learned, customer validation findings, or ask for feedback..."
+              placeholder={
+                postType === 'video'
+                  ? 'Describe what viewers will see in this video, key milestones, or feedback you want...'
+                  : "Share what you're building, insights learned, customer validation findings, or ask for feedback..."
+              }
               className="w-full px-3.5 py-2.5 text-xs sm:text-sm bg-[#0B0F19] border border-gray-800 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5E1E]"
             />
           </div>
@@ -358,10 +396,37 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
                 </div>
               )}
 
+              {/* Upload Progress / Error */}
+              {uploadProgress !== null && (
+                <div className="p-3 rounded-xl bg-[#0B0F19] border border-indigo-500/40 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs text-indigo-300 font-semibold">
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Uploading media to COOK server...</span>
+                    </span>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-gray-800 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-indigo-500 to-[#FF5E1E] transition-all"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {uploadError && (
+                <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2">
+                  {uploadError}
+                </p>
+              )}
+
               {/* Attached Media Previews */}
               {mediaList.length > 0 && (
-                <div className="space-y-2 pt-1">
-                  <span className="text-[11px] font-semibold text-gray-400">Attached Media ({mediaList.length}):</span>
+                <div className="space-y-2.5 pt-1">
+                  <span className="text-[11px] font-semibold text-gray-400">
+                    Uploaded & Ready ({mediaList.length}):
+                  </span>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     {mediaList.map((m, idx) => (
                       <div
@@ -369,20 +434,19 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
                         className="relative rounded-xl overflow-hidden border border-gray-700 bg-black aspect-video group"
                       >
                         {m.type === 'video' ? (
-                          <video src={m.url} className="w-full h-full object-cover" controls={false} />
+                          <video src={m.url} className="w-full h-full object-cover" controls />
                         ) : (
                           <img src={m.url} alt={m.name} className="w-full h-full object-cover" />
                         )}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveMedia(idx)}
-                            className="p-1.5 rounded-full bg-rose-600 text-white shadow-lg"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        <span className="absolute bottom-1 left-1 max-w-[80%] text-[9px] font-medium bg-black/70 text-white px-1.5 py-0.5 rounded truncate">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveMedia(idx)}
+                          className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-rose-600 text-white shadow-lg opacity-85 hover:opacity-100"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="absolute bottom-1 left-1 max-w-[85%] text-[9px] font-medium bg-black/75 text-white px-1.5 py-0.5 rounded truncate">
+                          {m.durationSeconds ? `${formatDuration(m.durationSeconds)} • ` : ''}
                           {m.name}
                         </span>
                       </div>

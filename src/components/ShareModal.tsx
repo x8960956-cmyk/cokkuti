@@ -15,7 +15,7 @@ import {
 
 export interface ShareItem {
   id: string;
-  type: 'post' | 'startup' | 'funding' | 'clip' | 'profile' | 'community' | 'event' | 'resource';
+  type: 'post' | 'startup' | 'funding' | 'profile' | 'community' | 'event' | 'resource';
   title: string;
   description: string;
   url?: string;

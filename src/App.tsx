@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { LeftSidebar } from './components/LeftSidebar';
 import { RightSidebar } from './components/RightSidebar';
 import { Feed } from './components/Feed';
 import { FundingHub } from './components/FundingHub';
-import { CookClips } from './components/CookClips';
 import { AiMentor } from './components/AiMentor';
 import { MessagingCenter } from './components/MessagingCenter';
 import { CallModal } from './components/CallModal';
@@ -20,8 +19,10 @@ import { ProfileView } from './components/ProfileView';
 import { EditProfileView } from './components/EditProfileView';
 import { GoogleAuthScreen } from './components/GoogleAuthScreen';
 import { OnboardingFlow } from './components/OnboardingFlow';
-import { Post, FundingRequest, Clip, Message, User } from './types';
-import { Home, Compass, Film, DollarSign, MessageSquare, PlusCircle, Flame } from 'lucide-react';
+import { ModeratorDashboard, MODERATOR_EMAIL } from './components/ModeratorDashboard';
+import { auth, firebaseSignOut, db as firestoreDb, doc, setDoc, setInMemorySheetsToken } from './firebase';
+import { Post, FundingRequest, Message, User, NotificationItem } from './types';
+import { Home, Compass, User as UserIcon, DollarSign, MessageSquare, PlusCircle, Flame, X } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('home');
@@ -36,8 +37,20 @@ export default function App() {
   // Data states
   const [posts, setPosts] = useState<Post[]>([]);
   const [fundings, setFundings] = useState<FundingRequest[]>([]);
-  const [clips, setClips] = useState<Clip[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+
+  // Real-time WebSocket & Chat States
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
+  const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({});
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [selectedChatPartner, setSelectedChatPartner] = useState<string | undefined>(undefined);
+  const [liveToast, setLiveToast] = useState<{ title: string; body: string; targetTab?: string } | null>(null);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const activeTabRef = useRef<string>(activeTab);
+  activeTabRef.current = activeTab;
 
   // Modals
   const [shareItem, setShareItem] = useState<ShareItem | null>(null);
@@ -45,7 +58,6 @@ export default function App() {
   const [createPostType, setCreatePostType] = useState('post');
   const [raiseFundsModalOpen, setRaiseFundsModalOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
-  const [clipsViewOpen, setClipsViewOpen] = useState(false);
   const [searchFilter, setSearchFilter] = useState('');
   const [selectedStartupFilter, setSelectedStartupFilter] = useState('');
 
@@ -99,15 +111,149 @@ export default function App() {
     }
   };
 
-  // Fetch application data only when authenticated user is present and onboarding completed
+  // Fetch application data when authenticated user is present and onboarding completed
   useEffect(() => {
     if (user && user.onboardingCompleted) {
       fetchPosts();
       fetchFundings();
-      fetchClips();
       fetchMessages();
+      fetchNotifications();
     }
   }, [user?.id, user?.onboardingCompleted, activeFilter]);
+
+  // Real-time WebSocket Connection (Chat, Presence, Typing, Read Receipts, Notifications, Video Metrics)
+  useEffect(() => {
+    if (!user || !user.onboardingCompleted) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+      setOnlineUserIds([]);
+      return;
+    }
+
+    let isDisposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryAttempt = 0;
+
+    const connectWs = () => {
+      if (isDisposed) return;
+      const token = localStorage.getItem('cook_auth_token');
+      if (!token) return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        retryAttempt = 0;
+        setWsConnected(true);
+        fetchMessages();
+        fetchNotifications();
+      };
+
+      socket.onmessage = (evt) => {
+        try {
+          const parsed = JSON.parse(evt.data);
+          const { event, payload } = parsed || {};
+
+          if (event === 'presence:update') {
+            if (Array.isArray(payload?.onlineUserIds)) {
+              setOnlineUserIds(payload.onlineUserIds);
+            }
+          } else if (event === 'chat:message') {
+            const incomingMsg: Message | undefined = payload?.message;
+            const clientTempId: string | undefined = payload?.clientTempId;
+            if (!incomingMsg) return;
+
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === incomingMsg.id)) return prev;
+              if (clientTempId && prev.some((m) => m.id === clientTempId)) {
+                return prev.map((m) => (m.id === clientTempId ? incomingMsg : m));
+              }
+              return [...prev, incomingMsg];
+            });
+
+            if (!incomingMsg.isMe && activeTabRef.current !== 'messages') {
+              setLiveToast({
+                title: `New message from ${incomingMsg.senderName}`,
+                body: incomingMsg.content,
+                targetTab: 'messages',
+              });
+            }
+          } else if (event === 'chat:typing') {
+            const { conversationId, isTyping } = payload || {};
+            if (conversationId) {
+              setTypingUsers((prev) => ({ ...prev, [conversationId]: Boolean(isTyping) }));
+            }
+          } else if (event === 'chat:read') {
+            const { conversationId, readAt } = payload || {};
+            if (conversationId) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.conversationId === conversationId && m.isMe && !m.read
+                    ? { ...m, read: true, readAt }
+                    : m
+                )
+              );
+            }
+          } else if (event === 'chat:error') {
+            const { clientTempId, error } = payload || {};
+            if (clientTempId) {
+              setMessages((prev) => prev.filter((m) => m.id !== clientTempId));
+            }
+            if (error) setChatError(error);
+          } else if (event === 'notification:new') {
+            const notif: NotificationItem | undefined = payload?.notification;
+            if (notif) {
+              setNotifications((prev) => {
+                if (prev.some((n) => n.id === notif.id)) return prev;
+                return [notif, ...prev];
+              });
+            }
+          } else if (event === 'post:engagement') {
+            const { postId, ...metrics } = payload || {};
+            if (postId) {
+              setPosts((prev) =>
+                prev.map((p) => (p.id === postId ? { ...p, ...metrics } : p))
+              );
+            }
+          }
+        } catch {
+          // ignore invalid frames
+        }
+      };
+
+      socket.onclose = () => {
+        setWsConnected(false);
+        if (!isDisposed) {
+          const delay = Math.min(8000, 1000 * Math.pow(1.6, retryAttempt++));
+          reconnectTimer = setTimeout(connectWs, delay);
+        }
+      };
+    };
+
+    connectWs();
+
+    return () => {
+      isDisposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+    };
+  }, [user?.id, user?.onboardingCompleted]);
+
+  // Auto-dismiss live toast banner after 4.5s
+  useEffect(() => {
+    if (!liveToast) return;
+    const t = setTimeout(() => setLiveToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [liveToast]);
 
   const handleAuthSuccess = (data: {
     user: any;
@@ -125,6 +271,16 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    setInMemorySheetsToken(null);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    try {
+      await firebaseSignOut(auth);
+    } catch {
+      // ignore
+    }
     const token = localStorage.getItem('cook_auth_token');
     if (token) {
       try {
@@ -132,37 +288,56 @@ export default function App() {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });
-      } catch (e) {
+      } catch {
         // ignore
       }
     }
     localStorage.removeItem('cook_auth_token');
     setUser(null);
+    setMessages([]);
+    setNotifications([]);
+    setOnlineUserIds([]);
     setActiveTab('home');
     setIsEditingProfile(false);
   };
 
   const handleSaveProfile = async (updated: Partial<User>) => {
-    if (!user) return;
-    const merged = { ...user, ...updated };
-    setUser(merged);
+    if (!user) throw new Error('Not logged in');
     const token = localStorage.getItem('cook_auth_token');
-    try {
-      const res = await fetch('/api/profile', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(updated),
-      });
-      const data = await res.json();
-      if (data.user) {
-        setUser(data.user);
-      }
-    } catch (err) {
-      console.error('Error persisting profile to server:', err);
+    if (!token) throw new Error('Authentication session token missing. Please sign in again.');
+
+    const res = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(updated),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success || !data.user) {
+      throw new Error(data.error || 'Failed to save profile changes');
     }
+
+    setUser(data.user);
+
+    try {
+      if (user.id) {
+        await setDoc(
+          doc(firestoreDb, 'users', user.id),
+          {
+            ...data.user,
+            updatedAt: Date.now(),
+          },
+          { merge: true }
+        );
+      }
+    } catch (fbErr) {
+      console.warn('Firestore profile sync note:', fbErr);
+    }
+
+    return data.user;
   };
 
   const fetchPosts = async () => {
@@ -185,19 +360,13 @@ export default function App() {
     }
   };
 
-  const fetchClips = async () => {
-    try {
-      const res = await fetch('/api/clips');
-      const data = await res.json();
-      if (data.clips) setClips(data.clips);
-    } catch (err) {
-      console.warn('Fallback: could not fetch clips', err);
-    }
-  };
-
   const fetchMessages = async () => {
+    const token = localStorage.getItem('cook_auth_token');
+    if (!token) return;
     try {
-      const res = await fetch('/api/messages');
+      const res = await fetch('/api/messages', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const data = await res.json();
       if (data.messages) setMessages(data.messages);
     } catch (err) {
@@ -205,65 +374,165 @@ export default function App() {
     }
   };
 
+  const [serverStats, setServerStats] = useState<any>(null);
+  const [allUsersCount, setAllUsersCount] = useState<number>(0);
+
+  const fetchServerStats = async () => {
+    try {
+      const res = await fetch('/api/server/stats');
+      const data = await res.json();
+      if (data && data.online) {
+        setServerStats(data);
+        if (data.totalUsers) setAllUsersCount(data.totalUsers);
+      }
+    } catch {
+      // server still starting or offline
+    }
+  };
+
+  const fetchNotifications = async () => {
+    const token = localStorage.getItem('cook_auth_token');
+    try {
+      const res = await fetch('/api/notifications', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      if (data.notifications) {
+        setNotifications(data.notifications);
+      }
+    } catch (err) {
+      console.warn('Fallback: could not fetch notifications', err);
+    }
+  };
+
+  // Light periodic sync for server stats + fallback notification refresh
+  useEffect(() => {
+    fetchServerStats();
+    fetchNotifications();
+
+    const interval = setInterval(() => {
+      fetchServerStats();
+      if (user) {
+        fetchNotifications();
+        if (!wsConnected && activeTab === 'messages') {
+          fetchMessages();
+        }
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [user?.id, activeTab, wsConnected]);
+
+  const handleMarkNotificationRead = async (id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    const token = localStorage.getItem('cook_auth_token');
+    try {
+      await fetch(`/api/notifications/${id}/read`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    const token = localStorage.getItem('cook_auth_token');
+    try {
+      await fetch('/api/notifications/read-all', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleClearNotifications = async () => {
+    setNotifications([]);
+    const token = localStorage.getItem('cook_auth_token');
+    try {
+      await fetch('/api/notifications', {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   // Post Actions
   const handleLike = async (postId: string) => {
-    setPosts(prev =>
-      prev.map(p => {
+    setPosts((prev) =>
+      prev.map((p) => {
         if (p.id === postId) {
           const liked = !p.likedByMe;
           return {
             ...p,
             likedByMe: liked,
-            likes: p.likes + (liked ? 1 : -1),
+            likes: Math.max(0, p.likes + (liked ? 1 : -1)),
           };
         }
         return p;
       })
     );
+    const token = localStorage.getItem('cook_auth_token');
     try {
-      await fetch(`/api/posts/${postId}/like`, { method: 'POST' });
+      await fetch(`/api/posts/${postId}/like`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (err) {
       console.error(err);
     }
   };
 
   const handleSave = async (postId: string) => {
-    setPosts(prev =>
-      prev.map(p => {
+    setPosts((prev) =>
+      prev.map((p) => {
         if (p.id === postId) {
           const saved = !p.savedByMe;
           return {
             ...p,
             savedByMe: saved,
-            saves: p.saves + (saved ? 1 : -1),
+            saves: Math.max(0, p.saves + (saved ? 1 : -1)),
           };
         }
         return p;
       })
     );
+    const token = localStorage.getItem('cook_auth_token');
     try {
-      await fetch(`/api/posts/${postId}/save`, { method: 'POST' });
+      await fetch(`/api/posts/${postId}/save`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (err) {
       console.error(err);
     }
   };
 
   const handleRepost = async (postId: string) => {
-    setPosts(prev =>
-      prev.map(p => {
+    setPosts((prev) =>
+      prev.map((p) => {
         if (p.id === postId) {
           const reposted = !p.repostedByMe;
           return {
             ...p,
             repostedByMe: reposted,
-            reposts: p.reposts + (reposted ? 1 : -1),
+            reposts: Math.max(0, p.reposts + (reposted ? 1 : -1)),
           };
         }
         return p;
       })
     );
+    const token = localStorage.getItem('cook_auth_token');
     try {
-      await fetch(`/api/posts/${postId}/repost`, { method: 'POST' });
+      await fetch(`/api/posts/${postId}/repost`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (err) {
       console.error(err);
     }
@@ -284,8 +553,8 @@ export default function App() {
       likes: 0,
     };
 
-    setPosts(prev =>
-      prev.map(p => (p.id === postId ? { ...p, comments: [optimisticComment, ...p.comments] } : p))
+    setPosts((prev) =>
+      prev.map((p) => (p.id === postId ? { ...p, comments: [optimisticComment, ...p.comments] } : p))
     );
 
     try {
@@ -303,10 +572,44 @@ export default function App() {
     }
   };
 
-  const handleDeletePost = async (postId: string) => {
-    setPosts(prev => prev.filter(p => p.id !== postId));
+  const handleVideoView = async (postId: string, completed = false) => {
+    const token = localStorage.getItem('cook_auth_token');
     try {
-      await fetch(`/api/posts/${postId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/posts/${postId}/view`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ completed }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  viewsCount: data.viewsCount,
+                  watchCompletions: data.watchCompletions,
+                }
+              : p
+          )
+        );
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeletePost = async (postId: string) => {
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+    const token = localStorage.getItem('cook_auth_token');
+    try {
+      await fetch(`/api/posts/${postId}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (err) {
       console.error(err);
     }
@@ -314,6 +617,7 @@ export default function App() {
 
   const handleCreatePost = async (postData: any) => {
     const token = localStorage.getItem('cook_auth_token');
+
     try {
       const res = await fetch('/api/posts', {
         method: 'POST',
@@ -325,7 +629,7 @@ export default function App() {
       });
       const data = await res.json();
       if (data.post) {
-        setPosts([data.post, ...posts]);
+        setPosts((prev) => [data.post, ...prev]);
       }
     } catch (err) {
       console.error(err);
@@ -346,10 +650,10 @@ export default function App() {
       });
       const data = await res.json();
       if (data.funding) {
-        setFundings([data.funding, ...fundings]);
+        setFundings((prev) => [data.funding, ...prev]);
       }
       if (data.post) {
-        setPosts([data.post, ...posts]);
+        setPosts((prev) => [data.post, ...prev]);
       }
     } catch (err) {
       console.error(err);
@@ -357,62 +661,180 @@ export default function App() {
   };
 
   const handleExpressInterest = async (fundId: string) => {
+    const token = localStorage.getItem('cook_auth_token');
     try {
-      await fetch(`/api/fundings/${fundId}/interest`, { method: 'POST' });
+      await fetch(`/api/fundings/${fundId}/interest`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (err) {
       console.error(err);
     }
   };
 
-  // Messaging Actions
-  const handleSendMessage = async (text: string, isVoiceNote?: boolean, mediaUrl?: string) => {
+  // Real-Time Messaging Actions (WebSocket primary + REST fallback + Privacy enforcement)
+  const handleSendMessage = async (
+    text: string,
+    isVoiceNote?: boolean,
+    mediaUrl?: string,
+    recipientId?: string,
+    conversationId?: string
+  ) => {
     if (!user) return;
+    setChatError(null);
+
+    const targetConvId =
+      conversationId ||
+      (recipientId ? `dm_${[user.id, recipientId].sort().join('_')}` : 'general');
+    const clientTempId = `tmp-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+
     const optimisticMsg: Message = {
-      id: `msg-${Date.now()}`,
-      conversationId: 'conv-1',
+      id: clientTempId,
+      conversationId: targetConvId,
       senderId: user.id,
       senderName: user.name,
       senderAvatar: user.avatar,
+      recipientId,
       content: text,
       mediaUrl,
       isVoiceNote,
+      read: false,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isMe: true,
     };
-    setMessages(prev => [...prev, optimisticMsg]);
+    setMessages((prev) => [...prev, optimisticMsg]);
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && recipientId) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: 'chat:send',
+          payload: {
+            clientTempId,
+            content: text,
+            isVoiceNote,
+            mediaUrl,
+            recipientId,
+            conversationId: targetConvId,
+          },
+        })
+      );
+      return;
+    }
 
     const token = localStorage.getItem('cook_auth_token');
     try {
-      await fetch('/api/messages', {
+      const res = await fetch('/api/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ content: text, isVoiceNote, mediaUrl }),
+        body: JSON.stringify({
+          content: text,
+          isVoiceNote,
+          mediaUrl,
+          recipientId,
+          conversationId: targetConvId,
+        }),
       });
-    } catch (err) {
-      console.error(err);
+      const data = await res.json();
+      if (!res.ok) {
+        setMessages((prev) => prev.filter((m) => m.id !== clientTempId));
+        setChatError(data.error || 'Could not deliver message.');
+        return;
+      }
+      if (data.message) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === clientTempId ? data.message : m))
+        );
+      }
+    } catch (err: any) {
+      setMessages((prev) => prev.filter((m) => m.id !== clientTempId));
+      setChatError(err?.message || 'Network error sending message.');
     }
   };
 
-  const handleUploadClip = async (newClipData: Partial<Clip>) => {
+  const handleTyping = (recipientId: string, conversationId: string, isTyping: boolean) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: 'chat:typing',
+          payload: { recipientId, conversationId, isTyping },
+        })
+      );
+    }
+  };
+
+  const handleMarkConversationRead = async (conversationId: string, partnerId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.conversationId === conversationId && !m.isMe && !m.read
+          ? { ...m, read: true, readAt: Date.now() }
+          : m
+      )
+    );
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: 'chat:read',
+          payload: { conversationId, partnerId },
+        })
+      );
+      return;
+    }
+
     const token = localStorage.getItem('cook_auth_token');
+    if (!token) return;
     try {
-      const res = await fetch('/api/clips', {
+      await fetch('/api/messages/read', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(newClipData),
+        body: JSON.stringify({ conversationId, partnerId }),
       });
-      const data = await res.json();
-      if (data.clip) {
-        setClips([data.clip, ...clips]);
-      }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleUpdateChatPrivacy = async (payload: {
+    chatInitiationPolicy?: 'everyone' | 'connections_only' | 'nobody';
+    blockUserId?: string;
+    unblockUserId?: string;
+  }) => {
+    const token = localStorage.getItem('cook_auth_token');
+    if (!token) return;
+    const res = await fetch('/api/chat/privacy', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.success && data.user) {
+      setUser(data.user);
+    }
+  };
+
+  const handleConnectUser = async (targetUserId: string) => {
+    const token = localStorage.getItem('cook_auth_token');
+    if (!token) return;
+    const res = await fetch('/api/connections/toggle', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ targetUserId }),
+    });
+    const data = await res.json();
+    if (data.success && typeof data.connectionsCount === 'number') {
+      setUser((prev) => (prev ? { ...prev, connectionsCount: data.connectionsCount } : prev));
     }
   };
 
@@ -426,6 +848,8 @@ export default function App() {
       setActiveTab('home');
     }
   };
+
+  const unreadMessagesCount = messages.filter((m) => !m.isMe && !m.read).length;
 
   // Loading state while checking session
   if (!authChecked) {
@@ -456,19 +880,40 @@ export default function App() {
     );
   }
 
+  const isModerator = user?.email?.toLowerCase().trim() === MODERATOR_EMAIL;
+
   // 3. ENTER COOK: Full application with protected routes and real user profile throughout!
   return (
-    <div className={`min-h-screen ${darkMode ? 'bg-[#0B0F19] text-[#F3F4F6]' : 'bg-slate-50 text-slate-900'}`}>
-      {/* Top Navbar */}
+    <div className={`min-h-[100dvh] flex flex-col overflow-x-clip ${darkMode ? 'bg-[#0B0F19] text-[#F3F4F6]' : 'bg-slate-100 text-slate-900'}`}>
+      {/* Live Real-Time Message Toast */}
+      {liveToast && (
+        <div className="fixed bottom-20 lg:bottom-6 right-4 z-50 max-w-xs bg-[#13192B] border border-indigo-500/40 rounded-2xl p-3.5 shadow-2xl flex items-start gap-3 animate-in slide-in-from-bottom-4">
+          <div className="w-8 h-8 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center flex-shrink-0">
+            <MessageSquare className="w-4 h-4" />
+          </div>
+          <div
+            className="flex-1 min-w-0 cursor-pointer"
+            onClick={() => {
+              if (liveToast.targetTab) setActiveTab(liveToast.targetTab);
+              setLiveToast(null);
+            }}
+          >
+            <p className="text-xs font-bold text-white truncate">{liveToast.title}</p>
+            <p className="text-[11px] text-gray-300 line-clamp-2 mt-0.5">{liveToast.body}</p>
+          </div>
+          <button
+            onClick={() => setLiveToast(null)}
+            className="text-gray-500 hover:text-white"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Top Navbar with Real Notifications & Messages Badge */}
       <Navbar
         activeTab={activeTab}
-        setActiveTab={tab => {
-          if (tab === 'clips') {
-            setClipsViewOpen(true);
-          } else {
-            setActiveTab(tab);
-          }
-        }}
+        setActiveTab={setActiveTab}
         onOpenCreateModal={() => {
           setCreatePostType('post');
           setCreatePostModalOpen(true);
@@ -480,35 +925,51 @@ export default function App() {
         }}
         darkMode={darkMode}
         setDarkMode={setDarkMode}
+        unreadMessagesCount={unreadMessagesCount}
+        unreadNotificationsCount={notifications.filter((n) => !n.read).length}
+        notifications={notifications}
+        onMarkNotificationRead={handleMarkNotificationRead}
+        onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
+        onClearNotifications={handleClearNotifications}
+        onNavigateToNotification={(targetType) => {
+          if (targetType === 'post') {
+            setActiveTab('home');
+          } else if (targetType === 'funding') {
+            setActiveTab('funding');
+          } else if (targetType === 'messages') {
+            setActiveTab('messages');
+          } else if (targetType === 'profile') {
+            setActiveTab('profile');
+          } else if (targetType === 'moderator' && isModerator) {
+            setActiveTab('moderator');
+          }
+        }}
+        onSignOut={handleSignOut}
         onSearch={handleSearch}
         user={user}
-        onSignOut={handleSignOut}
       />
 
       {/* Main Layout Container */}
-      <main className="w-full max-w-[1720px] mx-auto px-2.5 sm:px-6 pt-4 sm:pt-6 pb-24 lg:pb-12 flex gap-6 justify-center">
-        {/* Left Sidebar */}
+      <main className="w-full max-w-[1440px] mx-auto px-3 sm:px-5 lg:px-6 pt-3 sm:pt-5 pb-24 lg:pb-10 flex-1 flex items-start gap-5 xl:gap-6 justify-center">
+        {/* Left Sidebar with Real Network & Unread Messages Badge */}
         <LeftSidebar
           activeTab={activeTab}
-          setActiveTab={tab => {
-            if (tab === 'clips') {
-              setClipsViewOpen(true);
-            } else {
-              setActiveTab(tab);
-            }
-          }}
+          setActiveTab={setActiveTab}
           onOpenProfile={() => {
             setActiveTab('profile');
             setIsEditingProfile(true);
           }}
           darkMode={darkMode}
           setDarkMode={setDarkMode}
+          unreadMessagesCount={unreadMessagesCount}
           user={user}
+          serverStats={serverStats}
+          allUsersCount={allUsersCount}
           onSignOut={handleSignOut}
         />
 
         {/* Center Content Stage */}
-        <div className="flex-1 flex justify-center min-w-0">
+        <div className="flex-1 w-full flex justify-center min-w-0">
           {activeTab === 'home' && (
             <Feed
               currentUser={user}
@@ -518,15 +979,16 @@ export default function App() {
               onLike={handleLike}
               onSave={handleSave}
               onRepost={handleRepost}
-              onShare={item => setShareItem(item)}
+              onShare={(item) => setShareItem(item)}
               onDelete={handleDeletePost}
               onAddComment={handleAddComment}
-              onOpenCreateModal={type => {
+              onVideoView={handleVideoView}
+              onOpenCreateModal={(type) => {
                 setCreatePostType(type || 'post');
                 setCreatePostModalOpen(true);
               }}
               onOpenRaiseFundsModal={() => setRaiseFundsModalOpen(true)}
-              onViewStartup={name => {
+              onViewStartup={(name) => {
                 setSelectedStartupFilter(name);
                 setActiveTab('funding');
               }}
@@ -541,8 +1003,9 @@ export default function App() {
               fundings={fundings}
               onOpenRaiseFundsModal={() => setRaiseFundsModalOpen(true)}
               onExpressInterest={handleExpressInterest}
-              onShare={item => setShareItem(item)}
-              onContactFounder={founder => {
+              onShare={(item) => setShareItem(item)}
+              onContactFounder={(founder) => {
+                setSelectedChatPartner(founder);
                 setActiveTab('messages');
               }}
               selectedStartupFilter={selectedStartupFilter}
@@ -550,25 +1013,43 @@ export default function App() {
           )}
 
           {activeTab === 'ai-mentor' && (
-            <AiMentor onShare={item => setShareItem(item)} />
+            <AiMentor onShare={(item) => setShareItem(item)} />
           )}
 
           {activeTab === 'messages' && (
             <MessagingCenter
               messages={messages}
+              currentUser={user}
               onSendMessage={handleSendMessage}
               onStartCall={handleStartCall}
+              selectedPartner={selectedChatPartner}
+              onlineUserIds={onlineUserIds}
+              wsConnected={wsConnected}
+              typingUsers={typingUsers}
+              chatError={chatError}
+              onClearChatError={() => setChatError(null)}
+              onTyping={handleTyping}
+              onMarkConversationRead={handleMarkConversationRead}
+              onUpdateChatPrivacy={handleUpdateChatPrivacy}
+              onConnectUser={handleConnectUser}
             />
           )}
 
+          {activeTab === 'moderator' && isModerator && (
+            <ModeratorDashboard currentUserEmail={user.email} />
+          )}
+
           {activeTab === 'communities' && (
-            <CommunitiesView onShare={item => setShareItem(item)} />
+            <CommunitiesView onShare={(item) => setShareItem(item)} />
           )}
 
           {activeTab === 'opportunities' && (
             <OpportunitiesView
-              onShare={item => setShareItem(item)}
-              onContactFounder={founder => setActiveTab('messages')}
+              onShare={(item) => setShareItem(item)}
+              onContactFounder={(founder) => {
+                setSelectedChatPartner(founder);
+                setActiveTab('messages');
+              }}
             />
           )}
 
@@ -577,17 +1058,20 @@ export default function App() {
               fundings={fundings}
               onOpenRaiseFundsModal={() => setRaiseFundsModalOpen(true)}
               onExpressInterest={handleExpressInterest}
-              onShare={item => setShareItem(item)}
-              onContactFounder={founder => setActiveTab('messages')}
+              onShare={(item) => setShareItem(item)}
+              onContactFounder={(founder) => {
+                setSelectedChatPartner(founder);
+                setActiveTab('messages');
+              }}
             />
           )}
 
           {activeTab === 'learning' && (
-            <LearningHubView onShare={item => setShareItem(item)} />
+            <LearningHubView onShare={(item) => setShareItem(item)} />
           )}
 
           {activeTab === 'events' && (
-            <EventsView onShare={item => setShareItem(item)} />
+            <EventsView onShare={(item) => setShareItem(item)} />
           )}
 
           {activeTab === 'discover' && (
@@ -599,12 +1083,16 @@ export default function App() {
               onLike={handleLike}
               onSave={handleSave}
               onRepost={handleRepost}
-              onShare={item => setShareItem(item)}
+              onShare={(item) => setShareItem(item)}
               onDelete={handleDeletePost}
               onAddComment={handleAddComment}
-              onOpenCreateModal={() => setCreatePostModalOpen(true)}
+              onVideoView={handleVideoView}
+              onOpenCreateModal={(type) => {
+                setCreatePostType(type || 'post');
+                setCreatePostModalOpen(true);
+              }}
               onOpenRaiseFundsModal={() => setRaiseFundsModalOpen(true)}
-              onViewStartup={name => {
+              onViewStartup={(name) => {
                 setSelectedStartupFilter(name);
                 setActiveTab('funding');
               }}
@@ -624,41 +1112,51 @@ export default function App() {
                 user={user}
                 posts={posts}
                 fundings={fundings}
-                clips={clips}
                 isOwner={true}
                 onEditProfile={() => setIsEditingProfile(true)}
-                onShare={item => setShareItem(item)}
+                onShare={(item) => setShareItem(item)}
                 onOpenRaiseFundsModal={() => setRaiseFundsModalOpen(true)}
+                onOpenUploadVideo={() => {
+                  setCreatePostType('video');
+                  setCreatePostModalOpen(true);
+                }}
                 onContactUser={() => setActiveTab('messages')}
                 onUpdateUser={handleSaveProfile}
                 onLikePost={handleLike}
                 onSavePost={handleSave}
                 onRepostPost={handleRepost}
+                onDeletePost={handleDeletePost}
                 onAddComment={handleAddComment}
+                onVideoView={handleVideoView}
               />
             )
           )}
         </div>
 
-        {/* Right Sidebar */}
-        <RightSidebar
-          onSelectTopic={tag => {
-            setActiveTab('home');
-            setActiveFilter('Trending');
-          }}
-          onViewStartup={name => {
-            setSelectedStartupFilter(name);
-            setActiveTab('funding');
-          }}
-          setActiveTab={setActiveTab}
-        />
+        {/* Right Sidebar (Shown on Home & Discover so full workspace tabs breathe on laptops) */}
+        {(activeTab === 'home' || activeTab === 'discover') && (
+          <RightSidebar
+            onSelectTopic={(_tag) => {
+              setActiveTab('home');
+              setActiveFilter('Trending');
+            }}
+            onViewStartup={(name) => {
+              setSelectedStartupFilter(name);
+              setActiveTab('funding');
+            }}
+            setActiveTab={setActiveTab}
+            fundings={fundings}
+            posts={posts}
+            onOpenRaiseFundsModal={() => setRaiseFundsModalOpen(true)}
+          />
+        )}
       </main>
 
       {/* Mobile Bottom Navigation Bar */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0B0F19]/95 backdrop-blur-xl border-t border-[#1F293D] py-2 px-3 pb-safe flex items-center justify-around select-none shadow-2xl">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0B0F19]/95 backdrop-blur-xl border-t border-[#1F293D] pt-1.5 pb-[max(8px,env(safe-area-inset-bottom,8px))] px-2 flex items-center justify-around select-none shadow-2xl">
         <button
           onClick={() => setActiveTab('home')}
-          className={`flex flex-col items-center gap-1 ${
+          className={`min-w-[48px] py-1 flex flex-col items-center justify-center gap-0.5 transition active:scale-95 ${
             activeTab === 'home' ? 'text-[#FF5E1E]' : 'text-gray-400'
           }`}
         >
@@ -668,7 +1166,7 @@ export default function App() {
 
         <button
           onClick={() => setActiveTab('discover')}
-          className={`flex flex-col items-center gap-1 ${
+          className={`min-w-[48px] py-1 flex flex-col items-center justify-center gap-0.5 transition active:scale-95 ${
             activeTab === 'discover' ? 'text-[#FF5E1E]' : 'text-gray-400'
           }`}
         >
@@ -677,31 +1175,17 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setCreatePostModalOpen(true)}
-          className="flex flex-col items-center justify-center -mt-5"
+          onClick={() => {
+            setCreatePostType('post');
+            setCreatePostModalOpen(true);
+          }}
+          className="flex flex-col items-center justify-center -mt-4 px-2 active:scale-95 transition"
+          aria-label="Create post"
         >
-          <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#FF5E1E] to-[#6366F1] flex items-center justify-center text-white shadow-lg shadow-orange-500/30">
-            <PlusCircle className="w-6 h-6" />
+          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-[#FF5E1E] to-[#6366F1] flex items-center justify-center text-white shadow-lg shadow-orange-500/30 ring-4 ring-[#0B0F19]">
+            <PlusCircle className="w-5 h-5" />
           </div>
-          <span className="text-[10px] font-semibold text-white mt-1">Post</span>
-        </button>
-
-        <button
-          onClick={() => setClipsViewOpen(true)}
-          className="flex flex-col items-center gap-1 text-gray-400"
-        >
-          <Film className="w-5 h-5" />
-          <span className="text-[10px] font-semibold">Clips</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('funding')}
-          className={`flex flex-col items-center gap-1 ${
-            activeTab === 'funding' ? 'text-[#FF5E1E]' : 'text-gray-400'
-          }`}
-        >
-          <DollarSign className="w-5 h-5" />
-          <span className="text-[10px] font-semibold">Funding</span>
+          <span className="text-[10px] font-semibold text-white mt-0.5">Post</span>
         </button>
 
         <button
@@ -709,32 +1193,39 @@ export default function App() {
             setActiveTab('profile');
             setIsEditingProfile(false);
           }}
-          className={`flex flex-col items-center gap-1 ${
+          className={`min-w-[48px] py-1 flex flex-col items-center justify-center gap-0.5 transition active:scale-95 ${
             activeTab === 'profile' ? 'text-[#FF5E1E]' : 'text-gray-400'
           }`}
         >
-          <div className="relative">
-            <img
-              src={user.avatar}
-              alt="Profile"
-              className={`w-5 h-5 rounded-full object-cover ${
-                activeTab === 'profile' ? 'ring-2 ring-[#FF5E1E]' : ''
-              }`}
-            />
-          </div>
+          <UserIcon className="w-5 h-5" />
           <span className="text-[10px] font-semibold">Profile</span>
         </button>
-      </nav>
 
-      {/* COOK Clips Full Screen Viewer */}
-      {clipsViewOpen && (
-        <CookClips
-          clips={clips}
-          onClose={() => setClipsViewOpen(false)}
-          onShare={item => setShareItem(item)}
-          onUploadClip={handleUploadClip}
-        />
-      )}
+        <button
+          onClick={() => setActiveTab('messages')}
+          className={`min-w-[48px] py-1 flex flex-col items-center justify-center gap-0.5 relative transition active:scale-95 ${
+            activeTab === 'messages' ? 'text-[#FF5E1E]' : 'text-gray-400'
+          }`}
+        >
+          <MessageSquare className="w-5 h-5" />
+          {unreadMessagesCount > 0 && (
+            <span className="absolute top-0 right-1.5 px-1 min-w-[15px] h-3.5 rounded-full bg-[#FF5E1E] text-white text-[9px] font-bold flex items-center justify-center">
+              {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
+            </span>
+          )}
+          <span className="text-[10px] font-semibold">Chat</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('funding')}
+          className={`min-w-[48px] py-1 flex flex-col items-center justify-center gap-0.5 transition active:scale-95 ${
+            activeTab === 'funding' ? 'text-[#FF5E1E]' : 'text-gray-400'
+          }`}
+        >
+          <DollarSign className="w-5 h-5" />
+          <span className="text-[10px] font-semibold">Funding</span>
+        </button>
+      </nav>
 
       {/* Universal Share & Copy Modal */}
       <ShareModal

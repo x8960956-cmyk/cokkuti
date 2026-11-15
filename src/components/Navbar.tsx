@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Search,
   Home,
   Compass,
-  Film,
   Users,
   MessageSquare,
   Bell,
@@ -24,9 +24,12 @@ import {
   BookOpen,
   Calendar,
   UserCheck,
+  Shield,
 } from 'lucide-react';
-import { User as UserType } from '../types';
+import { User as UserType, NotificationItem } from '../types';
 import { currentUser as defaultUser } from '../data/mockData';
+import { Notifications } from './Notifications';
+import { MODERATOR_EMAIL } from './ModeratorDashboard';
 
 interface NavbarProps {
   activeTab: string;
@@ -38,6 +41,11 @@ interface NavbarProps {
   setDarkMode: (val: boolean) => void;
   unreadMessagesCount?: number;
   unreadNotificationsCount?: number;
+  notifications?: NotificationItem[];
+  onMarkNotificationRead?: (id: string) => void;
+  onMarkAllNotificationsRead?: () => void;
+  onClearNotifications?: () => void;
+  onNavigateToNotification?: (targetType?: string, targetId?: string) => void;
   onSearch: (query: string) => void;
   user?: UserType;
   onSignOut?: () => void;
@@ -51,8 +59,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenProfile,
   darkMode,
   setDarkMode,
-  unreadMessagesCount = 12,
-  unreadNotificationsCount = 5,
+  unreadMessagesCount = 0,
+  unreadNotificationsCount = 0,
+  notifications = [],
+  onMarkNotificationRead = () => {},
+  onMarkAllNotificationsRead = () => {},
+  onClearNotifications = () => {},
+  onNavigateToNotification,
   onSearch,
   user = defaultUser,
   onSignOut,
@@ -63,6 +76,28 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
 
+  // Lock body scroll and support Escape key when mobile drawer is open
+  useEffect(() => {
+    if (!mobileDrawerOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMobileDrawerOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mobileDrawerOpen]);
+
+  // Compute live unread count if notifications array is provided
+  const liveUnreadCount = notifications.length > 0 
+    ? notifications.filter(n => !n.read).length 
+    : unreadNotificationsCount;
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSearch(searchQuery);
@@ -72,19 +107,24 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navItems = [
     { id: 'home', label: 'Home', icon: Home },
     { id: 'discover', label: 'Discover', icon: Compass },
-    { id: 'clips', label: 'Clips', icon: Film, badge: 'HOT' },
-    { id: 'funding', label: 'Funding Hub', icon: DollarSign },
-    { id: 'communities', label: 'Communities', icon: Users },
+    { id: 'funding', label: 'Funding', icon: DollarSign },
     { id: 'messages', label: 'Messages', icon: MessageSquare, badgeCount: unreadMessagesCount },
-    { id: 'notifications', label: 'Notifications', icon: Bell, badgeCount: unreadNotificationsCount },
   ];
 
-  const drawerLinks = [
+  const isModerator = user?.email?.toLowerCase().trim() === MODERATOR_EMAIL;
+
+  const drawerLinks: Array<{
+    id: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    highlight?: boolean;
+    badge?: string;
+    badgeCount?: number;
+  }> = [
     { id: 'home', label: 'Home Feed', icon: Home },
     { id: 'profile', label: 'My Profile & Experience', icon: User },
     { id: 'discover', label: 'Explore & Discover', icon: Compass },
     { id: 'funding', label: 'Startups & Funding Hub', icon: DollarSign, highlight: true },
-    { id: 'clips', label: 'COOK Clips (Shorts)', icon: Film, badge: 'HOT' },
     { id: 'communities', label: 'Communities', icon: Users },
     { id: 'opportunities', label: 'Co-founders & Roles', icon: TrendingUp },
     { id: 'investors', label: 'Investor Directory', icon: UserCheck },
@@ -92,18 +132,23 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'learning', label: 'Learning Hub', icon: BookOpen },
     { id: 'events', label: 'Events & Demo Days', icon: Calendar },
     { id: 'messages', label: 'Messages & Calling', icon: MessageSquare, badgeCount: unreadMessagesCount },
+    { id: 'notifications', label: 'Notifications & Alerts', icon: Bell, badgeCount: liveUnreadCount },
+    ...(isModerator
+      ? [{ id: 'moderator', label: 'Moderator Hub', icon: Shield, badge: 'OWNER' }]
+      : []),
   ];
 
   return (
-    <header className="sticky top-0 z-40 w-full bg-[#0B0F19]/95 backdrop-blur-xl border-b border-[#1F293D]/80 transition-colors">
-      <div className="max-w-[1600px] mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-6">
+    <>
+      <header className="sticky top-0 z-40 w-full bg-[#0B0F19]/95 backdrop-blur-xl border-b border-[#1F293D]/80 transition-colors">
+      <div className="max-w-[1440px] mx-auto px-3 sm:px-5 lg:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 lg:gap-4">
         
         {/* Left: Mobile Drawer Trigger + Brand Logo */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Mobile Menu Hamburger (Visible on < xl screens) */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Mobile Menu Hamburger (Visible on < lg screens, aligned with LeftSidebar lg:flex) */}
           <button
             onClick={() => setMobileDrawerOpen(true)}
-            className="xl:hidden w-10 h-10 -ml-1 rounded-xl text-gray-400 hover:text-white hover:bg-white/5 flex items-center justify-center transition active:scale-95"
+            className="lg:hidden w-9 h-9 sm:w-10 sm:h-10 -ml-1 rounded-xl text-gray-400 hover:text-white hover:bg-white/5 flex items-center justify-center transition active:scale-95"
             aria-label="Open navigation drawer"
           >
             <Menu className="w-5 h-5" />
@@ -114,7 +159,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={() => setActiveTab('home')}
             className="flex items-center gap-2 cursor-pointer select-none group flex-shrink-0"
           >
-            <div className="relative w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-[#13192B] to-[#1E2742] border border-orange-500/40 p-1 flex items-center justify-center shadow-lg shadow-orange-500/10 group-hover:border-orange-400 transition">
+            <div className="relative w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-br from-[#13192B] to-[#1E2742] border border-orange-500/40 p-1 flex items-center justify-center shadow-lg shadow-orange-500/10 group-hover:border-orange-400 transition">
               <img
                 src="/assets/aistudio/image_a5d9fbb6.png"
                 alt="COOK"
@@ -130,21 +175,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span className="font-extrabold text-base sm:text-xl tracking-tight text-white flex items-center">
                   COOK<span className="text-[#FF5E1E]">.</span>
                 </span>
-                <span className="hidden md:inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#FF5E1E]/20 text-[#FF5E1E] border border-[#FF5E1E]/30">
+                <span className="hidden 2xl:inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#FF5E1E]/20 text-[#FF5E1E] border border-[#FF5E1E]/30">
                   AI STARTUPS
                 </span>
               </div>
-              <span className="hidden sm:inline text-[10px] text-gray-400 font-medium tracking-tight">
+              <span className="hidden 2xl:inline text-[10px] text-gray-400 font-medium tracking-tight">
                 Got an Idea? Let It Cook.
               </span>
             </div>
           </div>
         </div>
 
-        {/* Global Search Bar (Desktop / Laptop) */}
+        {/* Global Search Bar (Tablet & Laptop) */}
         <form
           onSubmit={handleSearchSubmit}
-          className="relative flex-1 max-w-xs xl:max-w-md hidden md:block"
+          className="relative flex-1 max-w-[210px] lg:max-w-[260px] xl:max-w-[270px] 2xl:max-w-sm hidden md:block"
         >
           <div className="relative flex items-center">
             <Search className="absolute left-3.5 w-4 h-4 text-gray-400 pointer-events-none" />
@@ -155,10 +200,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 setSearchQuery(e.target.value);
                 onSearch(e.target.value);
               }}
-              placeholder="Search startups, ideas, people... (⌘K)"
-              className="w-full pl-10 pr-12 py-2 text-xs sm:text-sm bg-[#13192B] border border-[#1F293D] rounded-full text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5E1E] focus:ring-1 focus:ring-[#FF5E1E]/40 transition"
+              placeholder="Search startups, people..."
+              className="w-full pl-9 pr-10 py-2 text-xs sm:text-sm bg-[#13192B] border border-[#1F293D] rounded-full text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5E1E] focus:ring-1 focus:ring-[#FF5E1E]/40 transition"
             />
-            <div className="absolute right-3 hidden lg:flex items-center gap-0.5 text-[10px] font-mono text-gray-400 bg-gray-800/80 px-1.5 py-0.5 rounded border border-gray-700">
+            <div className="absolute right-3 hidden xl:flex items-center gap-0.5 text-[10px] font-mono text-gray-400 bg-gray-800/80 px-1.5 py-0.5 rounded border border-gray-700">
               ⌘K
             </div>
           </div>
@@ -172,14 +217,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             return (
               <button
                 key={item.id}
-                onClick={() => {
-                  if (item.id === 'notifications') {
-                    setNotificationsOpen(!notificationsOpen);
-                  } else {
-                    setActiveTab(item.id);
-                  }
-                }}
-                className={`relative px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap shrink-0 ${
+                onClick={() => setActiveTab(item.id)}
+                className={`relative px-2.5 2xl:px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
                   isActive
                     ? 'bg-[#1E2640] text-white shadow-sm border border-indigo-500/30'
                     : 'text-gray-400 hover:text-white hover:bg-[#13192B]'
@@ -194,22 +233,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                   ) : null}
                 </div>
                 <span>{item.label}</span>
-                {item.badge && (
-                  <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#FF5E1E] text-white">
-                    {item.badge}
-                  </span>
-                )}
               </button>
             );
           })}
         </nav>
 
         {/* Right Action Icons & Profile */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Mobile Search Toggle Icon */}
           <button
             onClick={() => setMobileSearchOpen(!mobileSearchOpen)}
-            className="md:hidden w-10 h-10 rounded-xl text-gray-400 hover:text-white flex items-center justify-center active:scale-95 transition"
+            className="md:hidden w-9 h-9 rounded-xl text-gray-400 hover:text-white flex items-center justify-center active:scale-95 transition"
             aria-label="Search"
           >
             <Search className="w-5 h-5" />
@@ -218,7 +252,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Quick Raise Funds Button (Tablet & Desktop) */}
           <button
             onClick={onOpenRaiseFundsModal}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#FF5E1E]/15 hover:bg-[#FF5E1E]/25 text-[#FF5E1E] border border-[#FF5E1E]/40 text-xs font-bold transition whitespace-nowrap active:scale-95"
+            className="hidden sm:flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 rounded-full bg-[#FF5E1E]/15 hover:bg-[#FF5E1E]/25 text-[#FF5E1E] border border-[#FF5E1E]/40 text-xs font-bold transition whitespace-nowrap active:scale-95 shrink-0"
           >
             <DollarSign className="w-3.5 h-3.5" />
             <span>Raise Funds</span>
@@ -227,10 +261,25 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Quick Create Post Button */}
           <button
             onClick={onOpenCreateModal}
-            className="flex items-center gap-1 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full bg-gradient-to-r from-[#6366F1] to-[#4F46E5] hover:from-[#4F46E5] hover:to-[#4338CA] text-white text-xs sm:text-sm font-semibold shadow-md shadow-indigo-500/25 transition cursor-pointer whitespace-nowrap active:scale-95"
+            className="flex items-center gap-1 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-full bg-gradient-to-r from-[#6366F1] to-[#4F46E5] hover:from-[#4F46E5] hover:to-[#4338CA] text-white text-xs sm:text-sm font-semibold shadow-md shadow-indigo-500/25 transition cursor-pointer whitespace-nowrap active:scale-95 shrink-0"
           >
             <PlusCircle className="w-4 h-4" />
             <span className="hidden sm:inline">Post Idea</span>
+          </button>
+
+          {/* Quick Notification Bell Icon (Accessible on all screens) */}
+          <button
+            onClick={() => setNotificationsOpen(!notificationsOpen)}
+            title="Notifications & Alerts"
+            className="relative w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#13192B] border border-[#1F293D] text-gray-400 hover:text-white flex items-center justify-center transition active:scale-95 cursor-pointer"
+            aria-label="Notifications"
+          >
+            <Bell className={`w-4 h-4 ${liveUnreadCount > 0 ? 'text-[#FF5E1E]' : ''}`} />
+            {liveUnreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[#FF5E1E] text-white text-[9px] font-extrabold flex items-center justify-center leading-none ring-2 ring-[#0B0F19] animate-pulse">
+                {liveUnreadCount > 9 ? '9+' : liveUnreadCount}
+              </span>
+            )}
           </button>
 
           {/* Theme Switcher Toggle */}
@@ -314,6 +363,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <Sparkles className="w-4 h-4 text-[#FF5E1E]" />
                     <span>AI Startup Mentor</span>
                   </button>
+                  {isModerator && (
+                    <button
+                      onClick={() => {
+                        setActiveTab('moderator');
+                        setProfileDropdownOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 transition"
+                    >
+                      <Shield className="w-4 h-4 text-amber-400" />
+                      <span>Moderator Hub</span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="pt-1 border-t border-[#1F293D]">
@@ -365,18 +426,21 @@ export const Navbar: React.FC<NavbarProps> = ({
           </form>
         </div>
       )}
+      </header>
 
-      {/* Mobile Slide-Over Navigation Drawer (For iPhones, Android & Tablets) */}
-      {mobileDrawerOpen && (
-        <div className="fixed inset-0 z-50 xl:hidden flex">
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity"
-            onClick={() => setMobileDrawerOpen(false)}
-          />
+      {/* Mobile Slide-Over Navigation Drawer (Rendered via Portal outside header so backdrop-blur never clips fixed positioning) */}
+      {mobileDrawerOpen &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div className="fixed inset-0 z-50 lg:hidden flex h-[100dvh] w-screen">
+            {/* Backdrop */}
+            <div
+              className="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity"
+              onClick={() => setMobileDrawerOpen(false)}
+            />
 
-          {/* Drawer Sheet */}
-          <div className="relative w-80 max-w-[85vw] bg-[#13192B] border-r border-[#1F293D] flex flex-col h-full shadow-2xl z-10 p-5 overflow-y-auto">
+            {/* Drawer Sheet */}
+            <div className="relative w-80 max-w-[85vw] h-[100dvh] bg-[#13192B] border-r border-[#1F293D] flex flex-col shadow-2xl z-10 p-5 pb-[max(20px,env(safe-area-inset-bottom,20px))] overflow-y-auto animate-in slide-in-from-left duration-200">
             {/* Drawer Header */}
             <div className="flex items-center justify-between pb-4 border-b border-[#1F293D]">
               <div className="flex items-center gap-2.5">
@@ -431,8 +495,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <button
                     key={link.id}
                     onClick={() => {
-                      setActiveTab(link.id);
                       setMobileDrawerOpen(false);
+                      if (link.id === 'notifications') {
+                        setNotificationsOpen(true);
+                      } else {
+                        setActiveTab(link.id);
+                      }
                     }}
                     className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition ${
                       isActive
@@ -496,48 +564,33 @@ export const Navbar: React.FC<NavbarProps> = ({
               )}
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+          document.body
+        )}
 
-      {/* Notifications Drawer */}
-      {notificationsOpen && (
-        <div className="absolute right-4 sm:right-24 top-14 sm:top-16 w-80 sm:w-96 rounded-2xl bg-[#13192B] border border-[#1F293D] shadow-2xl p-4 z-50 text-xs animate-in fade-in slide-in-from-top-2">
-          <div className="flex items-center justify-between pb-3 border-b border-[#1F293D]">
-            <h4 className="font-bold text-white text-sm">Notifications</h4>
-            <button
-              onClick={() => setNotificationsOpen(false)}
-              className="text-gray-400 hover:text-white"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="space-y-3 py-3 max-h-80 overflow-y-auto">
-            <div className="flex gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer">
-              <span className="w-8 h-8 rounded-full bg-[#FF5E1E]/20 text-[#FF5E1E] flex items-center justify-center font-bold">
-                🔥
-              </span>
-              <div>
-                <p className="text-gray-200">
-                  <span className="font-bold text-white">Elena Rostova</span> expressed interest in your startup{' '}
-                  <span className="text-[#FF5E1E]">TechNova</span>.
-                </p>
-                <span className="text-[10px] text-gray-500">10m ago</span>
-              </div>
-            </div>
-            <div className="flex gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer">
-              <span className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold">
-                💬
-              </span>
-              <div>
-                <p className="text-gray-200">
-                  <span className="font-bold text-white">Sarah Ahmed</span> commented on your post: "The glassmorphic..."
-                </p>
-                <span className="text-[10px] text-gray-500">1h ago</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </header>
+      {/* Real-Time Notifications Component (Rendered outside header for full-viewport backdrop) */}
+      <Notifications
+        notifications={notifications}
+        isOpen={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        onMarkAsRead={(id) => onMarkNotificationRead(id)}
+        onMarkAllAsRead={() => onMarkAllNotificationsRead()}
+        onClearAll={() => onClearNotifications()}
+        onNavigateToTarget={(targetType, targetId) => {
+          setNotificationsOpen(false);
+          if (onNavigateToNotification) {
+            onNavigateToNotification(targetType, targetId);
+          } else if (targetType === 'post') {
+            setActiveTab('home');
+          } else if (targetType === 'funding') {
+            setActiveTab('funding');
+          } else if (targetType === 'messages') {
+            setActiveTab('messages');
+          } else if (targetType === 'moderator' && isModerator) {
+            setActiveTab('moderator');
+          }
+        }}
+      />
+    </>
   );
 };
